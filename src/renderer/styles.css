@@ -83,6 +83,10 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .footer-row { height: 30px; display: flex; justify-content: space-between; align-items: center; padding: 0 5px; color: #858f88; font-size: 9px; }
 .footer-row > span, .startup-row > span:first-child { display: flex; align-items: center; gap: 7px; }
 .small-select { display: flex; align-items: center; gap: 4px; border: 0; color: #6d786f; background: transparent; font-size: 9px; }
+.firebase-auth-button { width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 5px; border: 0; border-radius: 7px; color: #58635b; background: transparent; text-align: left; font-size: 10px; }
+.firebase-auth-button:not(:disabled):hover { background: var(--hover); }
+.firebase-auth-button:disabled { color: #929b95; cursor: wait; }
+.firebase-auth-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tray-setting { position: relative; }
 .tray-menu { position: absolute; right: 0; bottom: 27px; z-index: 22; width: 165px; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .tray-menu button { width: 100%; min-height: 31px; display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; font-size: 10px; }
@@ -128,7 +132,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
   .add-account:hover { background: #20382b; }
   .content-status { color: #a8b5ab; background: #1f2722e8; border-color: #303a33; }
   .section-heading { color: #9aa59d; }
-  .footer-row, .small-select, .dnd-toggle, .startup-row { color: #acb7ae; }
+  .footer-row, .small-select, .dnd-toggle, .startup-row, .firebase-auth-button { color: #acb7ae; }
   .active .account-secondary { color: #81c79e; }
   .progress-track { background: #36423a; }
   .brand-menu:hover { color: white; }

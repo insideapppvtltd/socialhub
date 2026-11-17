@@ -7,6 +7,8 @@ import {
   ChevronDown,
   CircleHelp,
   Download,
+  LogIn,
+  LogOut,
   Plus,
   RefreshCw,
   Settings2,
@@ -15,8 +17,10 @@ import {
   Volume2,
   VolumeX
 } from 'lucide-react'
+import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
 import type { Account, DownloadUpdate, HubState } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
+import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
 
 type AccountMenu = { id: string; x: number; y: number } | null
 type EditorDialog =
@@ -48,7 +52,11 @@ export default function App() {
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [download, setDownload] = useState<DownloadUpdate | null>(null)
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
+  const [firebaseAuthChecked, setFirebaseAuthChecked] = useState(false)
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const firebaseSetupError = getFirebaseConfigError()
+    ?? (!import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID ? 'Add VITE_GOOGLE_OAUTH_CLIENT_ID to .env.local.' : null)
 
   const showToast = useCallback((message: string) => {
     setToast(message)
@@ -59,6 +67,20 @@ export default function App() {
   const addAccount = useCallback(() => {
     setDialog({ kind: 'add' })
   }, [])
+
+  const toggleFirebaseSignIn = async () => {
+    try {
+      if (firebaseUser) {
+        await signOut(getFirebaseAuth())
+        return
+      }
+      if (firebaseSetupError) throw new Error(firebaseSetupError)
+      const idToken = await window.socialHub.getGoogleAuthToken()
+      await signInWithCredential(getFirebaseAuth(), GoogleAuthProvider.credential(idToken))
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Google sign-in failed.')
+    }
+  }
 
   const submitAccount = useCallback(async (name: string, appId?: string, url?: string) => {
     try {
@@ -100,6 +122,29 @@ export default function App() {
       if (toastTimeout.current) clearTimeout(toastTimeout.current)
     }
   }, [addAccount, showToast])
+
+  useEffect(() => {
+    if (getFirebaseConfigError()) {
+      setFirebaseAuthChecked(true)
+      return
+    }
+    try {
+      return onAuthStateChanged(
+        getFirebaseAuth(),
+        (user) => {
+          setFirebaseUser(user)
+          setFirebaseAuthChecked(true)
+        },
+        (error) => {
+          setFirebaseAuthChecked(true)
+          showToast(error.message)
+        }
+      )
+    } catch (error) {
+      setFirebaseAuthChecked(true)
+      showToast(error instanceof Error ? error.message : 'Could not initialize Firebase.')
+    }
+  }, [showToast])
 
   useEffect(() => {
     window.socialHub.setSidebarOverlay(Boolean(dialog || menu))
@@ -262,6 +307,19 @@ export default function App() {
               )}
             </div>
           </div>
+          <button
+            className="firebase-auth-button"
+            disabled={!firebaseAuthChecked}
+            title={firebaseSetupError ?? firebaseUser?.email ?? undefined}
+            onClick={() => void toggleFirebaseSignIn()}
+          >
+            {firebaseUser ? <LogOut size={15} /> : <LogIn size={15} />}
+            <span>
+              {firebaseUser
+                ? `Sign out${firebaseUser.displayName ? ` · ${firebaseUser.displayName}` : ''}`
+                : firebaseSetupError ? 'Google sign-in setup required' : 'Sign in with Google'}
+            </span>
+          </button>
           <button className="startup-row" onClick={() => void setPreference('launchAtStartup', !state.preferences.launchAtStartup)}>
             <span><Volume2 size={15} /> Launch at startup</span>
             <span className={`switch ${state.preferences.launchAtStartup ? 'on' : ''}`} />

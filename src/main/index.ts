@@ -142,7 +142,8 @@ if (!gotLock) {
         app.setLoginItemSettings({ openAtLogin: preferences.launchAtStartup })
         publishState()
       },
-      rendererUrl
+      rendererUrl,
+      process.env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? ''
     )
     publishState()
     loadRenderer(mainWindow)
