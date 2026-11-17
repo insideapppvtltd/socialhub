@@ -200,6 +200,13 @@ export function registerIpc(
         patch[key] = candidate[key]
       }
     }
+    if ('theme' in candidate) {
+      const theme = candidate.theme
+      if (theme !== 'system' && theme !== 'light' && theme !== 'dark') {
+        throw new Error(`Invalid theme: "${String(theme)}". Expected 'system', 'light', or 'dark'.`)
+      }
+      patch.theme = theme
+    }
     const preferences = accounts.updatePreferences(patch)
     onPreferencesChanged(preferences)
     return preferences

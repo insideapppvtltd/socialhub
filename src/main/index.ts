@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  nativeTheme,
   shell
 } from 'electron'
 import { createRequire } from 'node:module'
@@ -116,6 +117,10 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     accountManager = new AccountManager()
+    nativeTheme.themeSource = accountManager.preferences().theme
+    nativeTheme.on('updated', () => {
+      publishState()
+    })
     if (accountManager.preferences().launchAtStartup) {
       app.setLoginItemSettings({ openAtLogin: true })
     }
@@ -142,6 +147,7 @@ if (!gotLock) {
       notifications,
       makeState,
       (preferences) => {
+        nativeTheme.themeSource = preferences.theme
         app.setLoginItemSettings({ openAtLogin: preferences.launchAtStartup })
         publishState()
       },

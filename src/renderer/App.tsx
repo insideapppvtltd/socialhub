@@ -15,6 +15,7 @@ import {
   MapPin,
   Mic,
   Monitor,
+  Moon,
   Pencil,
   Plus,
   RefreshCw,
@@ -22,12 +23,13 @@ import {
   Settings2,
   Shield,
   ShieldCheck,
+  Sun,
   Trash2,
   Volume2,
   VolumeX
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
-import type { Account, AccountPermissions, DownloadUpdate, HubState, PermissionState, Workspace } from '../main/types'
+import type { Account, AccountPermissions, DownloadUpdate, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
@@ -50,7 +52,7 @@ const initialState: HubState = {
   activeWorkspaceId: null,
   accounts: [],
   activeAccountId: null,
-  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false },
+  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false, theme: 'system' },
   globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
 }
 
@@ -230,7 +232,7 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [addAccount, state.activeAccountId, workspaceAccounts])
 
-  const setPreference = async (key: 'doNotDisturb' | 'minimizeToTray' | 'launchAtStartup', value: boolean) => {
+  const setPreference = async <K extends keyof Preferences>(key: K, value: Preferences[K]) => {
     try {
       const preferences = await window.socialHub.updatePreferences({ [key]: value })
       setState((current) => ({ ...current, preferences }))
@@ -238,6 +240,32 @@ export default function App() {
       showToast(error instanceof Error ? error.message : 'Could not update setting.')
     }
   }
+
+  useEffect(() => {
+    const applyResolvedTheme = () => {
+      const mode: ThemeMode = state.preferences.theme ?? 'system'
+      let resolved: 'light' | 'dark' = 'light'
+      if (mode === 'dark') {
+        resolved = 'dark'
+      } else if (mode === 'light') {
+        resolved = 'light'
+      } else {
+        resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+      }
+      document.documentElement.setAttribute('data-theme', resolved)
+    }
+
+    applyResolvedTheme()
+
+    const mql = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => {
+      if ((state.preferences.theme ?? 'system') === 'system') {
+        applyResolvedTheme()
+      }
+    }
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [state.preferences.theme])
 
   const invoke = async (task: () => Promise<unknown>, success?: string) => {
     try {
@@ -481,6 +509,44 @@ export default function App() {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+          <div className="preferences-appearance-row" role="region" aria-label="Appearance settings">
+            <span className="appearance-label">Appearance</span>
+            <div className="theme-toggle-group" role="radiogroup" aria-label="Theme selection">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={state.preferences.theme === 'system'}
+                className={`theme-btn ${state.preferences.theme === 'system' ? 'selected' : ''}`}
+                onClick={() => void setPreference('theme', 'system')}
+                title="System theme"
+              >
+                <Monitor size={12} />
+                <span>System</span>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={state.preferences.theme === 'light'}
+                className={`theme-btn ${state.preferences.theme === 'light' ? 'selected' : ''}`}
+                onClick={() => void setPreference('theme', 'light')}
+                title="Light theme"
+              >
+                <Sun size={12} />
+                <span>Light</span>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={state.preferences.theme === 'dark'}
+                className={`theme-btn ${state.preferences.theme === 'dark' ? 'selected' : ''}`}
+                onClick={() => void setPreference('theme', 'dark')}
+                title="Dark theme"
+              >
+                <Moon size={12} />
+                <span>Dark</span>
+              </button>
             </div>
           </div>
           <button

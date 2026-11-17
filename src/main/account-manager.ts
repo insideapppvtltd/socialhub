@@ -61,7 +61,8 @@ const store = new Store<StoreData>({
     preferences: {
       doNotDisturb: false,
       minimizeToTray: true,
-      launchAtStartup: false
+      launchAtStartup: false,
+      theme: 'system'
     },
     windowBounds: { width: 1180, height: 780 },
     globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
@@ -132,6 +133,38 @@ export class AccountManager {
       )
       if (needsGlobalMigration) {
         store.set('globalDefaultPermissions', sanitizedGlobal)
+      }
+    }
+
+    const rawPreferences = store.get('preferences') as Partial<Preferences> | undefined
+    if (!rawPreferences || typeof rawPreferences !== 'object') {
+      store.set('preferences', {
+        doNotDisturb: false,
+        minimizeToTray: true,
+        launchAtStartup: false,
+        theme: 'system'
+      })
+    } else {
+      let modPrefs = false
+      const updatedPrefs = { ...rawPreferences }
+      if (updatedPrefs.theme !== 'system' && updatedPrefs.theme !== 'light' && updatedPrefs.theme !== 'dark') {
+        updatedPrefs.theme = 'system'
+        modPrefs = true
+      }
+      if (typeof updatedPrefs.doNotDisturb !== 'boolean') {
+        updatedPrefs.doNotDisturb = false
+        modPrefs = true
+      }
+      if (typeof updatedPrefs.minimizeToTray !== 'boolean') {
+        updatedPrefs.minimizeToTray = true
+        modPrefs = true
+      }
+      if (typeof updatedPrefs.launchAtStartup !== 'boolean') {
+        updatedPrefs.launchAtStartup = false
+        modPrefs = true
+      }
+      if (modPrefs) {
+        store.set('preferences', updatedPrefs as Preferences)
       }
     }
   }
@@ -395,11 +428,25 @@ export class AccountManager {
   }
 
   preferences(): Preferences {
-    return store.get('preferences')
+    const raw = store.get('preferences')
+    if (!raw || (raw.theme !== 'system' && raw.theme !== 'light' && raw.theme !== 'dark')) {
+      return {
+        doNotDisturb: Boolean(raw?.doNotDisturb),
+        minimizeToTray: raw?.minimizeToTray ?? true,
+        launchAtStartup: Boolean(raw?.launchAtStartup),
+        theme: 'system'
+      }
+    }
+    return raw
   }
 
   updatePreferences(partial: Partial<Preferences>): Preferences {
-    const next = { ...this.preferences(), ...partial }
+    if (partial.theme !== undefined) {
+      if (partial.theme !== 'system' && partial.theme !== 'light' && partial.theme !== 'dark') {
+        throw new Error(`Invalid theme: "${String(partial.theme)}". Expected 'system', 'light', or 'dark'.`)
+      }
+    }
+    const next: Preferences = { ...this.preferences(), ...partial }
     store.set('preferences', next)
     return next
   }

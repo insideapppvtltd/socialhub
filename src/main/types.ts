@@ -51,10 +51,13 @@ export interface NewAccount {
   permissions?: Partial<AccountPermissions>
 }
 
+export type ThemeMode = 'system' | 'light' | 'dark'
+
 export interface Preferences {
   doNotDisturb: boolean
   minimizeToTray: boolean
   launchAtStartup: boolean
+  theme: ThemeMode
 }
 
 export interface WindowBounds {
