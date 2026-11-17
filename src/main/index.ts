@@ -36,6 +36,8 @@ if (!gotLock) {
   })
 
   const makeState = (): HubState => ({
+    workspaces: accountManager.listWorkspaces(),
+    activeWorkspaceId: accountManager.activeWorkspaceId(),
     accounts: viewManager?.listAccounts() ?? [],
     activeAccountId: viewManager?.activeAccountId() ?? null,
     preferences: accountManager.preferences()

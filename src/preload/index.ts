@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Account, DownloadUpdate, HubState, NewAccount, Preferences } from '../main/types'
+import type { Account, DownloadUpdate, HubState, NewAccount, Preferences, Workspace } from '../main/types'
 
 export interface SocialHubAPI {
   getState(): Promise<HubState>
@@ -16,6 +16,10 @@ export interface SocialHubAPI {
   onState(callback: (state: HubState) => void): () => void
   onDownload(callback: (update: DownloadUpdate) => void): () => void
   onAddAccountShortcut(callback: () => void): () => void
+  addWorkspace(name: string): Promise<Workspace>
+  renameWorkspace(id: string, name: string): Promise<Workspace>
+  deleteWorkspace(id: string): Promise<void>
+  activateWorkspace(id: string): Promise<void>
 }
 
 const api: SocialHubAPI = {
@@ -32,7 +36,11 @@ const api: SocialHubAPI = {
   setSidebarOverlay: (active) => ipcRenderer.send('hub:set-sidebar-overlay', active),
   onState: (callback) => subscribe('hub:state', callback),
   onDownload: (callback) => subscribe('hub:download', callback),
-  onAddAccountShortcut: (callback) => subscribe('hub:add-account-shortcut', callback)
+  onAddAccountShortcut: (callback) => subscribe('hub:add-account-shortcut', callback),
+  addWorkspace: (name) => ipcRenderer.invoke('hub:add-workspace', name),
+  renameWorkspace: (id, name) => ipcRenderer.invoke('hub:rename-workspace', id, name),
+  deleteWorkspace: (id) => ipcRenderer.invoke('hub:delete-workspace', id),
+  activateWorkspace: (id) => ipcRenderer.invoke('hub:activate-workspace', id)
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {

@@ -42,7 +42,38 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .icon-button { border: 0; background: transparent; color: #909a93; display: grid; place-items: center; }
 .brand-menu { width: 26px; height: 28px; border-radius: 7px; }
 .brand-menu:hover { background: var(--hover); color: var(--text); }
-.account-section { padding: 22px 11px 8px; }
+.workspace-bar { padding: 9px 11px 4px; border-bottom: 1px solid var(--line); position: relative; }
+.workspace-dropdown-container { position: relative; width: 100%; }
+.workspace-trigger { width: 100%; height: 33px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; font-weight: 600; transition: border-color .15s, background .15s; }
+.workspace-trigger:hover { background: var(--hover); border-color: #8bc6a3; }
+.workspace-info { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.workspace-icon { color: var(--green); display: flex; align-items: center; }
+.workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.workspace-badge { font-size: 9px; line-height: 14px; color: var(--muted); background: var(--hover); border-radius: 8px; padding: 0 5px; font-weight: 500; }
+.workspace-menu { position: absolute; left: 0; top: calc(100% + 4px); width: 100%; z-index: 25; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.workspace-menu-header { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px 5px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .7px; border-bottom: 1px solid var(--line); }
+.workspace-add-mini { border: 0; background: transparent; color: var(--green); cursor: pointer; display: flex; align-items: center; padding: 2px; border-radius: 4px; }
+.workspace-add-mini:hover { background: var(--green-soft); }
+.workspace-items-list { max-height: 170px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.workspace-menu-item { width: 100%; min-height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; font-size: 11px; position: relative; }
+.workspace-menu-item:hover { background: var(--hover); }
+.workspace-menu-item.active { background: var(--green-soft); color: var(--green); font-weight: 600; }
+.ws-item-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.ws-item-count { font-size: 9px; color: var(--muted); background: var(--hover); border-radius: 7px; padding: 0 4px; }
+.workspace-menu-item.active .ws-item-count { background: rgba(22, 139, 84, 0.15); color: var(--green); }
+.ws-check { color: var(--green); flex-shrink: 0; }
+.ws-item-actions { display: none; align-items: center; gap: 2px; margin-left: 4px; }
+.workspace-menu-item:hover .ws-item-actions { display: flex; }
+.ws-action-btn { border: 0; background: transparent; color: var(--muted); cursor: pointer; display: flex; align-items: center; padding: 3px; border-radius: 4px; }
+.ws-action-btn:hover { background: var(--hover); color: var(--text); }
+.ws-action-btn.danger:hover { color: #c95151; }
+.workspace-menu-footer { border-top: 1px solid var(--line); padding-top: 4px; }
+.workspace-add-full { width: 100%; height: 27px; display: flex; align-items: center; gap: 6px; padding: 0 6px; border: 0; border-radius: 5px; background: transparent; color: var(--green); font-size: 10px; font-weight: 600; cursor: pointer; }
+.workspace-add-full:hover { background: var(--green-soft); }
+.workspace-empty-state { padding: 22px 10px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; border: 1px dashed var(--line); border-radius: 8px; margin: 4px 0; }
+.workspace-empty-state p { margin: 0; font-size: 10px; color: var(--muted); }
+.add-account-empty { display: flex; align-items: center; gap: 6px; padding: 5px 11px; border: 1px solid var(--green); border-radius: 6px; background: var(--green); color: white; font-size: 10px; font-weight: 600; cursor: pointer; }
+.account-section { padding: 14px 11px 8px; }
 .section-heading { height: 25px; display: flex; align-items: flex-start; justify-content: space-between; padding: 0 7px; color: #929b95; font-size: 9px; font-weight: 700; letter-spacing: .85px; }
 .total-pill { font-size: 9px; line-height: 16px; color: var(--green); background: var(--green-soft); border-radius: 9px; padding: 0 6px; letter-spacing: 0; font-weight: 600; margin-top: -3px; }
 .account-list { display: flex; flex-direction: column; gap: 3px; max-height: 46vh; overflow-y: auto; }
@@ -136,4 +167,9 @@ button { color: inherit; font: inherit; cursor: pointer; }
   .active .account-secondary { color: #81c79e; }
   .progress-track { background: #36423a; }
   .brand-menu:hover { color: white; }
+  .workspace-trigger:hover { border-color: #50c184; }
+  .workspace-menu-item.active { background: #20382b; color: #50c184; }
+  .workspace-menu-item.active .ws-item-count { background: #2b4f3a; color: #50c184; }
+  .workspace-empty-state { border-color: #303a33; }
+  .add-account-empty { background: #50c184; border-color: #50c184; color: #151a17; }
 }

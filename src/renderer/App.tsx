@@ -7,8 +7,10 @@ import {
   ChevronDown,
   CircleHelp,
   Download,
+  Layers,
   LogIn,
   LogOut,
+  Pencil,
   Plus,
   RefreshCw,
   Settings2,
@@ -18,7 +20,7 @@ import {
   VolumeX
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
-import type { Account, DownloadUpdate, HubState } from '../main/types'
+import type { Account, DownloadUpdate, HubState, Workspace } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
 
@@ -28,9 +30,14 @@ type EditorDialog =
   | { kind: 'rename'; account: Account }
   | { kind: 'confirm-remove'; account: Account }
   | { kind: 'confirm-cache'; account: Account }
+  | { kind: 'add-workspace' }
+  | { kind: 'rename-workspace'; workspace: Workspace }
+  | { kind: 'delete-workspace'; workspace: Workspace }
   | null
 
 const initialState: HubState = {
+  workspaces: [],
+  activeWorkspaceId: null,
   accounts: [],
   activeAccountId: null,
   preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false }
@@ -50,6 +57,7 @@ export default function App() {
   const [menu, setMenu] = useState<AccountMenu>(null)
   const [dialog, setDialog] = useState<EditorDialog>(null)
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [download, setDownload] = useState<DownloadUpdate | null>(null)
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
@@ -82,19 +90,50 @@ export default function App() {
     }
   }
 
-  const submitAccount = useCallback(async (name: string, appId?: string, url?: string) => {
+  const submitAccount = useCallback(async (name: string, appId?: string, url?: string, workspaceId?: string) => {
     try {
       if (dialog?.kind === 'rename') {
         await window.socialHub.renameAccount(dialog.account.id, name)
       } else {
         if (!appId) throw new Error('Select an app or website.')
-        await window.socialHub.addAccount({ name, appId, url })
+        await window.socialHub.addAccount({ name, appId, url, workspaceId })
       }
       setDialog(null)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not add account.')
     }
   }, [dialog, showToast])
+
+  const submitAddWorkspace = useCallback(async (name: string) => {
+    try {
+      const ws = await window.socialHub.addWorkspace(name)
+      await window.socialHub.activateWorkspace(ws.id)
+      setDialog(null)
+      showToast(`Workspace “${ws.name}” created.`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not create workspace.')
+    }
+  }, [showToast])
+
+  const submitRenameWorkspace = useCallback(async (id: string, name: string) => {
+    try {
+      const ws = await window.socialHub.renameWorkspace(id, name)
+      setDialog(null)
+      showToast(`Workspace renamed to “${ws.name}”.`)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not rename workspace.')
+    }
+  }, [showToast])
+
+  const submitDeleteWorkspace = useCallback(async (id: string) => {
+    try {
+      await window.socialHub.deleteWorkspace(id)
+      setDialog(null)
+      showToast('Workspace deleted.')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not delete workspace.')
+    }
+  }, [showToast])
 
   useEffect(() => {
     let active = true
@@ -111,6 +150,7 @@ export default function App() {
       if (!(target instanceof Element)) return
       if (!target.closest('.tray-setting')) setTrayMenuOpen(false)
       if (!target.closest('.context-menu, .account-row')) setMenu(null)
+      if (!target.closest('.workspace-dropdown-container')) setWorkspaceMenuOpen(false)
     }
     document.addEventListener('pointerdown', closeMenusOutside)
     return () => {
@@ -147,9 +187,16 @@ export default function App() {
   }, [showToast])
 
   useEffect(() => {
-    window.socialHub.setSidebarOverlay(Boolean(dialog || menu))
+    window.socialHub.setSidebarOverlay(Boolean(dialog || menu || workspaceMenuOpen))
     return () => window.socialHub.setSidebarOverlay(false)
-  }, [dialog, menu])
+  }, [dialog, menu, workspaceMenuOpen])
+
+  const activeWorkspace =
+    state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
+  const currentWorkspaceId = state.activeWorkspaceId ?? activeWorkspace?.id
+  const workspaceAccounts = state.accounts.filter(
+    (account) => account.workspaceId === currentWorkspaceId
+  )
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -158,7 +205,7 @@ export default function App() {
         event.preventDefault()
         void addAccount()
       } else if (/^[1-9]$/.test(event.key)) {
-        const account = state.accounts[Number(event.key) - 1]
+        const account = workspaceAccounts[Number(event.key) - 1]
         if (account) {
           event.preventDefault()
           void window.socialHub.activateAccount(account.id)
@@ -170,7 +217,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [addAccount, state.activeAccountId, state.accounts])
+  }, [addAccount, state.activeAccountId, workspaceAccounts])
 
   const setPreference = async (key: 'doNotDisturb' | 'minimizeToTray' | 'launchAtStartup', value: boolean) => {
     try {
@@ -191,7 +238,7 @@ export default function App() {
     setMenu(null)
   }
 
-  const totalUnread = state.accounts.reduce((sum, account) => sum + account.unread, 0)
+  const totalUnread = workspaceAccounts.reduce((sum, account) => sum + account.unread, 0)
 
   return (
     <main className="hub-shell">
@@ -204,34 +251,142 @@ export default function App() {
           </div>
         </header>
 
+        {/* Workspace Bar */}
+        <div className="workspace-bar">
+          <div className="workspace-dropdown-container">
+            <button
+              className="workspace-trigger"
+              aria-haspopup="menu"
+              aria-expanded={workspaceMenuOpen}
+              onClick={() => setWorkspaceMenuOpen((prev) => !prev)}
+            >
+              <div className="workspace-info">
+                <span className="workspace-icon"><Layers size={14} /></span>
+                <span className="workspace-name">{activeWorkspace?.name ?? 'Personal'}</span>
+                <span className="workspace-badge">{workspaceAccounts.length}</span>
+              </div>
+              <ChevronDown size={13} className={`chevron ${workspaceMenuOpen ? 'rotate' : ''}`} />
+            </button>
+
+            {workspaceMenuOpen && (
+              <div className="workspace-menu" role="menu">
+                <div className="workspace-menu-header">
+                  <span>WORKSPACES</span>
+                  <button
+                    className="workspace-add-mini"
+                    title="Add Workspace"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false)
+                      setDialog({ kind: 'add-workspace' })
+                    }}
+                  >
+                    <Plus size={13} />
+                  </button>
+                </div>
+
+                <div className="workspace-items-list">
+                  {state.workspaces.map((ws) => {
+                    const count = state.accounts.filter((a) => a.workspaceId === ws.id).length
+                    const isActive = ws.id === currentWorkspaceId
+                    return (
+                      <div
+                        key={ws.id}
+                        className={`workspace-menu-item ${isActive ? 'active' : ''}`}
+                        onClick={() => {
+                          setWorkspaceMenuOpen(false)
+                          void window.socialHub.activateWorkspace(ws.id).catch((err: unknown) => {
+                            showToast(err instanceof Error ? err.message : 'Could not switch workspace.')
+                          })
+                        }}
+                      >
+                        <span className="ws-item-title">{ws.name}</span>
+                        <span className="ws-item-count">{count}</span>
+                        {isActive && <Check size={12} className="ws-check" />}
+                        <div className="ws-item-actions" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            className="ws-action-btn"
+                            title="Rename Workspace"
+                            onClick={() => {
+                              setWorkspaceMenuOpen(false)
+                              setDialog({ kind: 'rename-workspace', workspace: ws })
+                            }}
+                          >
+                            <Pencil size={11} />
+                          </button>
+                          <button
+                            className="ws-action-btn danger"
+                            title="Delete Workspace"
+                            onClick={() => {
+                              setWorkspaceMenuOpen(false)
+                              setDialog({ kind: 'delete-workspace', workspace: ws })
+                            }}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="workspace-menu-footer">
+                  <button
+                    className="workspace-add-full"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false)
+                      setDialog({ kind: 'add-workspace' })
+                    }}
+                  >
+                    <Plus size={13} />
+                    <span>New workspace</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         <section className="account-section" aria-label="Web app accounts">
           <div className="section-heading">
-            <span>YOUR ACCOUNTS</span>
+            <span>{activeWorkspace?.name ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
             {totalUnread > 0 && <span className="total-pill">{totalUnread > 99 ? '99+' : totalUnread} unread</span>}
           </div>
+
           <nav className="account-list">
-            {state.accounts.map((account) => (
-              <AccountRow
-                key={account.id}
-                account={account}
-                active={account.id === state.activeAccountId}
-                onSelect={() => {
-                  void window.socialHub.activateAccount(account.id).catch((error: unknown) => {
-                    showToast(error instanceof Error ? error.message : 'Could not switch accounts.')
-                  })
-                }}
-                onContextMenu={(event) => {
-                  event.preventDefault()
-                  setMenu({ id: account.id, x: Math.min(event.clientX, window.innerWidth - 230), y: event.clientY })
-                }}
-              />
-            ))}
+            {workspaceAccounts.length === 0 ? (
+              <div className="workspace-empty-state">
+                <p>No accounts in this workspace</p>
+                <button className="add-account-empty" onClick={() => void addAccount()}>
+                  <Plus size={13} /> Add an account
+                </button>
+              </div>
+            ) : (
+              workspaceAccounts.map((account) => (
+                <AccountRow
+                  key={account.id}
+                  account={account}
+                  active={account.id === state.activeAccountId}
+                  onSelect={() => {
+                    void window.socialHub.activateAccount(account.id).catch((error: unknown) => {
+                      showToast(error instanceof Error ? error.message : 'Could not switch accounts.')
+                    })
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault()
+                    setMenu({ id: account.id, x: Math.min(event.clientX, window.innerWidth - 230), y: event.clientY })
+                  }}
+                />
+              ))
+            )}
           </nav>
-          <button className="add-account" onClick={() => void addAccount()}>
-            <span className="add-icon"><Plus size={16} /></span>
-            <span>Add an account</span>
-            <kbd>⌘ N</kbd>
-          </button>
+
+          {workspaceAccounts.length > 0 && (
+            <button className="add-account" onClick={() => void addAccount()}>
+              <span className="add-icon"><Plus size={16} /></span>
+              <span>Add an account</span>
+              <kbd>⌘ N</kbd>
+            </button>
+          )}
         </section>
 
         <section className="privacy-card">
@@ -347,11 +502,17 @@ export default function App() {
           }}
         />
       )}
+
       {dialog && (
         <HubDialog
           dialog={dialog}
+          workspaces={state.workspaces}
+          accounts={state.accounts}
+          activeWorkspaceId={currentWorkspaceId ?? null}
           onClose={() => setDialog(null)}
-          onSubmitAccount={(name, appId, url) => void submitAccount(name, appId, url)}
+          onSubmitAccount={(name, appId, url, workspaceId) => void submitAccount(name, appId, url, workspaceId)}
+          onSubmitAddWorkspace={(name) => void submitAddWorkspace(name)}
+          onSubmitRenameWorkspace={(id, name) => void submitRenameWorkspace(id, name)}
           onConfirm={() => {
             if (dialog.kind === 'confirm-remove') {
               void invoke(() => window.socialHub.removeAccount(dialog.account.id), 'Account removed.')
@@ -359,10 +520,13 @@ export default function App() {
             } else if (dialog.kind === 'confirm-cache') {
               void invoke(() => window.socialHub.clearCache(dialog.account.id), 'Cache cleared.')
               setDialog(null)
+            } else if (dialog.kind === 'delete-workspace') {
+              void submitDeleteWorkspace(dialog.workspace.id)
             }
           }}
         />
       )}
+
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   )
@@ -370,16 +534,27 @@ export default function App() {
 
 function HubDialog({
   dialog,
+  workspaces,
+  accounts,
+  activeWorkspaceId,
   onClose,
   onSubmitAccount,
+  onSubmitAddWorkspace,
+  onSubmitRenameWorkspace,
   onConfirm
 }: {
   dialog: Exclude<EditorDialog, null>
+  workspaces: Workspace[]
+  accounts: Account[]
+  activeWorkspaceId: string | null
   onClose: () => void
-  onSubmitAccount: (name: string, appId?: string, url?: string) => void
+  onSubmitAccount: (name: string, appId?: string, url?: string, workspaceId?: string) => void
+  onSubmitAddWorkspace: (name: string) => void
+  onSubmitRenameWorkspace: (id: string, name: string) => void
   onConfirm: () => void
 }) {
   const [appMode, setAppMode] = useState<'app' | 'custom'>('app')
+
   if (dialog.kind === 'add' || dialog.kind === 'rename') {
     const rename = dialog.kind === 'rename'
     return (
@@ -393,18 +568,35 @@ function HubDialog({
           if (typeof name !== 'string' || !name.trim()) return
           if (rename) {
             onSubmitAccount(name)
-          } else if (appMode === 'custom') {
-            const url = formData.get('website-url')
-            if (typeof url === 'string') onSubmitAccount(name, CUSTOM_APP_ID, url)
           } else {
-            const appId = formData.get('app-id')
-            if (typeof appId === 'string') onSubmitAccount(name, appId)
+            const workspaceId = formData.get('workspace-id')
+            const selectedWsId = typeof workspaceId === 'string' && workspaceId ? workspaceId : undefined
+            if (appMode === 'custom') {
+              const url = formData.get('website-url')
+              if (typeof url === 'string') onSubmitAccount(name, CUSTOM_APP_ID, url, selectedWsId)
+            } else {
+              const appId = formData.get('app-id')
+              if (typeof appId === 'string') onSubmitAccount(name, appId, undefined, selectedWsId)
+            }
           }
         }}>
           <h2>{rename ? 'Rename account' : 'Add an account'}</h2>
           <p>{rename ? 'Choose a name for this account.' : 'Choose an app or add any secure website. Each account gets its own login session.'}</p>
           {!rename && (
             <>
+              <label htmlFor="account-workspace">Workspace</label>
+              <select
+                id="account-workspace"
+                name="workspace-id"
+                defaultValue={activeWorkspaceId ?? workspaces[0]?.id}
+              >
+                {workspaces.map((ws) => (
+                  <option key={ws.id} value={ws.id}>
+                    {ws.name}
+                  </option>
+                ))}
+              </select>
+
               <label htmlFor="app-mode">Type</label>
               <select id="app-mode" name="app-mode" value={appMode} onChange={(event) => setAppMode(event.currentTarget.value === 'custom' ? 'custom' : 'app')}>
                 <option value="app">App</option>
@@ -438,6 +630,102 @@ function HubDialog({
             <button type="submit" className="dialog-primary">{rename ? 'Save name' : 'Add account'}</button>
           </div>
         </form>
+      </div>
+    )
+  }
+
+  if (dialog.kind === 'add-workspace' || dialog.kind === 'rename-workspace') {
+    const isRename = dialog.kind === 'rename-workspace'
+    return (
+      <div className="dialog-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}>
+        <form className="hub-dialog" onSubmit={(event) => {
+          event.preventDefault()
+          const formData = new FormData(event.currentTarget)
+          const name = formData.get('workspace-name')
+          if (typeof name !== 'string' || !name.trim()) return
+          if (isRename) {
+            onSubmitRenameWorkspace(dialog.workspace.id, name)
+          } else {
+            onSubmitAddWorkspace(name)
+          }
+        }}>
+          <h2>{isRename ? 'Rename workspace' : 'Add workspace'}</h2>
+          <p>{isRename ? 'Choose a new name for this workspace.' : 'Create a new workspace to group your accounts.'}</p>
+          <label htmlFor="workspace-name">Workspace name</label>
+          <input
+            id="workspace-name"
+            name="workspace-name"
+            maxLength={40}
+            required
+            autoFocus
+            defaultValue={isRename ? dialog.workspace.name : ''}
+            placeholder="e.g. Work, Marketing, Social"
+          />
+          <div className="dialog-actions">
+            <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
+            <button type="submit" className="dialog-primary">{isRename ? 'Save name' : 'Create workspace'}</button>
+          </div>
+        </form>
+      </div>
+    )
+  }
+
+  if (dialog.kind === 'delete-workspace') {
+    const accountCount = accounts.filter((a) => a.workspaceId === dialog.workspace.id).length
+    const isOnlyWorkspace = workspaces.length <= 1
+
+    if (accountCount > 0) {
+      return (
+        <div className="dialog-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose()
+        }}>
+          <section className="hub-dialog" role="alertdialog" aria-modal="true">
+            <h2>Cannot delete workspace</h2>
+            <p>
+              “{dialog.workspace.name}” contains {accountCount} account{accountCount === 1 ? '' : 's'}. You must remove or move all accounts before this workspace can be deleted.
+            </p>
+            <div className="dialog-actions">
+              <button type="button" className="dialog-primary" onClick={onClose}>Understood</button>
+            </div>
+          </section>
+        </div>
+      )
+    }
+
+    if (isOnlyWorkspace) {
+      return (
+        <div className="dialog-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose()
+        }}>
+          <section className="hub-dialog" role="alertdialog" aria-modal="true">
+            <h2>Cannot delete workspace</h2>
+            <p>
+              “{dialog.workspace.name}” is your only workspace. Social Hub requires at least one active workspace.
+            </p>
+            <div className="dialog-actions">
+              <button type="button" className="dialog-primary" onClick={onClose}>Understood</button>
+            </div>
+          </section>
+        </div>
+      )
+    }
+
+    return (
+      <div className="dialog-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}>
+        <section className="hub-dialog" role="alertdialog" aria-modal="true">
+          <h2>Delete workspace?</h2>
+          <p>
+            Are you sure you want to delete the empty workspace “{dialog.workspace.name}”? This action cannot be undone.
+          </p>
+          <div className="dialog-actions">
+            <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
+            <button type="button" className="dialog-danger" onClick={onConfirm}>Delete workspace</button>
+          </div>
+        </section>
       </div>
     )
   }

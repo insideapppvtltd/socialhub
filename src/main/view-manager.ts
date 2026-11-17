@@ -75,11 +75,23 @@ export class ViewManager {
   async initialize(): Promise<void> {
     let accounts = this.accounts.list()
     if (accounts.length === 0) {
-      this.accounts.add('Personal', DEFAULT_APP.id, DEFAULT_APP.url)
+      const defaultWorkspaceId = this.accounts.activeWorkspaceId()
+      this.accounts.add('WhatsApp Personal', DEFAULT_APP.id, DEFAULT_APP.url, defaultWorkspaceId)
       accounts = this.accounts.list()
     }
     for (const account of accounts) this.createView(account)
-    this.activate(this.accounts.activeId() ?? accounts[0].id)
+    const activeWorkspaceId = this.accounts.activeWorkspaceId()
+    const workspaceAccounts = accounts.filter((a) => a.workspaceId === activeWorkspaceId)
+    const savedActiveId = this.accounts.activeId()
+    const targetId = workspaceAccounts.some((a) => a.id === savedActiveId)
+      ? savedActiveId
+      : workspaceAccounts[0]?.id ?? null
+    if (targetId) {
+      this.activate(targetId)
+    } else {
+      this.activeId = null
+      this.onStateChanged()
+    }
   }
 
   listAccounts(): Account[] {
@@ -104,6 +116,12 @@ export class ViewManager {
 
   activate(id: string): void {
     if (!this.views.has(id)) throw new Error('Account view not found.')
+    const account = this.accounts.get(id)
+    if (account?.workspaceId && this.accounts.getWorkspace(account.workspaceId)) {
+      if (this.accounts.activeWorkspaceId() !== account.workspaceId) {
+        this.accounts.setActiveWorkspace(account.workspaceId)
+      }
+    }
     for (const [accountId, view] of this.views) {
       view.setVisible(accountId === id && !this.sidebarOverlayActive)
     }
@@ -112,15 +130,38 @@ export class ViewManager {
     this.onStateChanged()
   }
 
+  switchWorkspace(workspaceId: string): void {
+    this.accounts.setActiveWorkspace(workspaceId)
+    const workspaceAccounts = this.accounts.list().filter((a) => a.workspaceId === workspaceId)
+    const currentActiveId = this.accounts.activeId()
+    const targetId = workspaceAccounts.some((a) => a.id === currentActiveId)
+      ? currentActiveId
+      : workspaceAccounts[0]?.id ?? null
+
+    if (targetId) {
+      this.activate(targetId)
+    } else {
+      for (const view of this.views.values()) {
+        view.setVisible(false)
+      }
+      this.activeId = null
+      this.accounts.setActive('')
+      this.onStateChanged()
+    }
+  }
+
   setSidebarOverlayActive(active: boolean): void {
     if (this.sidebarOverlayActive === active) return
     this.sidebarOverlayActive = active
     if (this.activeId) this.views.get(this.activeId)?.setVisible(!active)
   }
 
-  addAccount(name: string, appId: string, url: string): Account {
-    const account = this.accounts.add(name, appId, url)
+  addAccount(name: string, appId: string, url: string, workspaceId?: string): Account {
+    const account = this.accounts.add(name, appId, url, workspaceId)
     this.createView(account)
+    if (this.accounts.activeWorkspaceId() !== account.workspaceId) {
+      this.accounts.setActiveWorkspace(account.workspaceId)
+    }
     this.activate(account.id)
     return { ...account, unread: 0 }
   }
@@ -153,8 +194,12 @@ export class ViewManager {
     this.accounts.remove(id)
     const nextId = this.accounts.activeId()
     this.activeId = null
-    if (nextId) this.activate(nextId)
-    this.onStateChanged()
+    if (nextId) {
+      this.activate(nextId)
+    } else {
+      for (const v of this.views.values()) v.setVisible(false)
+      this.onStateChanged()
+    }
   }
 
   rename(id: string, name: string): Account {
@@ -331,7 +376,9 @@ export class ViewManager {
       const modifier = process.platform === 'darwin' ? input.meta : input.control
       if (!modifier) return
       if (/^[1-9]$/.test(input.key)) {
-        const target = this.accounts.list()[Number(input.key) - 1]
+        const activeWorkspaceId = this.accounts.activeWorkspaceId()
+        const accountsInWorkspace = this.accounts.list().filter((a) => a.workspaceId === activeWorkspaceId)
+        const target = accountsInWorkspace[Number(input.key) - 1]
         if (target) {
           event.preventDefault()
           this.activate(target.id)

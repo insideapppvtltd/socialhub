@@ -71,13 +71,48 @@ export function registerIpc(
     const candidate = value as Record<string, unknown>
     assertName(candidate.name)
     if (typeof candidate.appId !== 'string') throw new Error('Select an app or website.')
+    let workspaceId: string | undefined
+    if (candidate.workspaceId !== undefined) {
+      if (typeof candidate.workspaceId !== 'string' || !candidate.workspaceId.trim()) {
+        throw new Error('Invalid workspace ID.')
+      }
+      workspaceId = candidate.workspaceId.trim()
+    }
     if (candidate.appId === CUSTOM_APP_ID) {
       if (!isHttpsUrl(candidate.url)) throw new Error('Enter a valid HTTPS website URL.')
-      return views.addAccount(candidate.name, CUSTOM_APP_ID, new URL(candidate.url).href)
+      return views.addAccount(candidate.name, CUSTOM_APP_ID, new URL(candidate.url).href, workspaceId)
     }
     const app = getCatalogApp(candidate.appId)
     if (!app) throw new Error('Select an app or website.')
-    return views.addAccount(candidate.name, app.id, app.url)
+    return views.addAccount(candidate.name, app.id, app.url, workspaceId)
+  })
+  ipcMain.handle('hub:add-workspace', (event, name: unknown) => {
+    guard(event)
+    assertName(name)
+    const workspace = accounts.addWorkspace(name)
+    window.webContents.send('hub:state', getState())
+    return workspace
+  })
+  ipcMain.handle('hub:rename-workspace', (event, id: unknown, name: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid workspace ID.')
+    assertName(name)
+    const workspace = accounts.renameWorkspace(id, name)
+    window.webContents.send('hub:state', getState())
+    return workspace
+  })
+  ipcMain.handle('hub:delete-workspace', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid workspace ID.')
+    accounts.deleteWorkspace(id)
+    views.switchWorkspace(accounts.activeWorkspaceId())
+    window.webContents.send('hub:state', getState())
+  })
+  ipcMain.handle('hub:activate-workspace', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid workspace ID.')
+    views.switchWorkspace(id)
+    window.webContents.send('hub:state', getState())
   })
   ipcMain.handle('hub:activate-account', (event, id: unknown) => {
     guard(event)
