@@ -22,10 +22,9 @@ On first launch, Hub creates a Personal WhatsApp account. Select **Add an accoun
 The optional Firebase Authentication integration signs users in with Google. It does not sync account data or use Firestore.
 
 1. Copy `.env.example` to `.env.local`.
-2. In Firebase project `social-hub-32839`, add a Web app and enable **Google** under **Authentication → Sign-in method**.
-3. Fill in `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID` in `.env.local` from the Firebase Web app configuration.
-4. In Google Cloud Console, create an OAuth 2.0 client ID of type **Desktop app** and set `VITE_GOOGLE_OAUTH_CLIENT_ID` in `.env.local`. The app uses the system browser and PKCE; do not add a client secret.
-5. Run `npm run dev`. The sidebar's Google sign-in button signs in to Firebase; signing out is available in the same place.
+2. The Firebase Web app configuration for `social-hub-32839` is already filled in in `.env.example`.
+3. In Google Cloud Console, create an OAuth 2.0 client ID of type **Desktop app** and set `VITE_GOOGLE_OAUTH_CLIENT_ID` in `.env.local`. The app uses the system browser and PKCE; do not add a client secret.
+4. Run `npm run dev`. The sidebar's Google sign-in button signs in to Firebase; signing out is available in the same place.
 
 Keep `.env.local` out of version control. The Firebase client configuration and OAuth client ID are public client identifiers; never put service-account keys or other private credentials in the desktop app.
 
