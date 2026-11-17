@@ -1,0 +1,76 @@
+export const APP_CATALOG = [
+  { id: 'whatsapp', name: 'WhatsApp', category: 'Messaging & social', url: 'https://web.whatsapp.com' },
+  { id: 'telegram', name: 'Telegram', category: 'Messaging & social', url: 'https://web.telegram.org' },
+  { id: 'discord', name: 'Discord', category: 'Messaging & social', url: 'https://discord.com/app' },
+  { id: 'slack', name: 'Slack', category: 'Messaging & social', url: 'https://app.slack.com/client' },
+  { id: 'messenger', name: 'Messenger', category: 'Messaging & social', url: 'https://www.messenger.com' },
+  { id: 'facebook', name: 'Facebook', category: 'Messaging & social', url: 'https://www.facebook.com' },
+  { id: 'instagram', name: 'Instagram', category: 'Messaging & social', url: 'https://www.instagram.com' },
+  { id: 'threads', name: 'Threads', category: 'Messaging & social', url: 'https://www.threads.net' },
+  { id: 'x', name: 'X', category: 'Messaging & social', url: 'https://x.com' },
+  { id: 'linkedin', name: 'LinkedIn', category: 'Messaging & social', url: 'https://www.linkedin.com' },
+  { id: 'tiktok', name: 'TikTok', category: 'Messaging & social', url: 'https://www.tiktok.com' },
+  { id: 'pinterest', name: 'Pinterest', category: 'Messaging & social', url: 'https://www.pinterest.com' },
+  { id: 'reddit', name: 'Reddit', category: 'Messaging & social', url: 'https://www.reddit.com' },
+  { id: 'snapchat', name: 'Snapchat', category: 'Messaging & social', url: 'https://web.snapchat.com' },
+  { id: 'youtube', name: 'YouTube', category: 'Messaging & social', url: 'https://www.youtube.com' },
+  { id: 'gmail', name: 'Gmail', category: 'Mail & meetings', url: 'https://mail.google.com' },
+  { id: 'outlook', name: 'Outlook', category: 'Mail & meetings', url: 'https://outlook.office.com/mail' },
+  { id: 'google-chat', name: 'Google Chat', category: 'Mail & meetings', url: 'https://chat.google.com' },
+  { id: 'microsoft-teams', name: 'Microsoft Teams', category: 'Mail & meetings', url: 'https://teams.microsoft.com' },
+  { id: 'zoom', name: 'Zoom', category: 'Mail & meetings', url: 'https://app.zoom.us' },
+  { id: 'google-meet', name: 'Google Meet', category: 'Mail & meetings', url: 'https://meet.google.com' },
+  { id: 'calendly', name: 'Calendly', category: 'Mail & meetings', url: 'https://calendly.com' },
+  { id: 'meta-business-suite', name: 'Meta Business Suite', category: 'Marketing & analytics', url: 'https://business.facebook.com' },
+  { id: 'meta-ads-manager', name: 'Meta Ads Manager', category: 'Marketing & analytics', url: 'https://adsmanager.facebook.com' },
+  { id: 'google-ads', name: 'Google Ads', category: 'Marketing & analytics', url: 'https://ads.google.com' },
+  { id: 'google-analytics', name: 'Google Analytics', category: 'Marketing & analytics', url: 'https://analytics.google.com' },
+  { id: 'search-console', name: 'Google Search Console', category: 'Marketing & analytics', url: 'https://search.google.com/search-console' },
+  { id: 'google-business', name: 'Google Business Profile', category: 'Marketing & analytics', url: 'https://business.google.com' },
+  { id: 'youtube-studio', name: 'YouTube Studio', category: 'Marketing & analytics', url: 'https://studio.youtube.com' },
+  { id: 'mailchimp', name: 'Mailchimp', category: 'Marketing & analytics', url: 'https://mailchimp.com' },
+  { id: 'klaviyo', name: 'Klaviyo', category: 'Marketing & analytics', url: 'https://www.klaviyo.com' },
+  { id: 'buffer', name: 'Buffer', category: 'Marketing & analytics', url: 'https://publish.buffer.com' },
+  { id: 'hootsuite', name: 'Hootsuite', category: 'Marketing & analytics', url: 'https://app.hootsuite.com' },
+  { id: 'semrush', name: 'Semrush', category: 'Marketing & analytics', url: 'https://www.semrush.com' },
+  { id: 'ahrefs', name: 'Ahrefs', category: 'Marketing & analytics', url: 'https://ahrefs.com' },
+  { id: 'hubspot', name: 'HubSpot', category: 'CRM & customer support', url: 'https://app.hubspot.com' },
+  { id: 'salesforce', name: 'Salesforce', category: 'CRM & customer support', url: 'https://login.salesforce.com' },
+  { id: 'pipedrive', name: 'Pipedrive', category: 'CRM & customer support', url: 'https://app.pipedrive.com' },
+  { id: 'intercom', name: 'Intercom', category: 'CRM & customer support', url: 'https://app.intercom.com' },
+  { id: 'zendesk', name: 'Zendesk', category: 'CRM & customer support', url: 'https://www.zendesk.com' },
+  { id: 'freshdesk', name: 'Freshdesk', category: 'CRM & customer support', url: 'https://freshdesk.com' },
+  { id: 'crisp', name: 'Crisp', category: 'CRM & customer support', url: 'https://app.crisp.chat' },
+  { id: 'notion', name: 'Notion', category: 'Productivity & collaboration', url: 'https://www.notion.so' },
+  { id: 'linear', name: 'Linear', category: 'Productivity & collaboration', url: 'https://linear.app' },
+  { id: 'asana', name: 'Asana', category: 'Productivity & collaboration', url: 'https://app.asana.com' },
+  { id: 'trello', name: 'Trello', category: 'Productivity & collaboration', url: 'https://trello.com' },
+  { id: 'clickup', name: 'ClickUp', category: 'Productivity & collaboration', url: 'https://app.clickup.com' },
+  { id: 'monday', name: 'monday.com', category: 'Productivity & collaboration', url: 'https://monday.com' },
+  { id: 'airtable', name: 'Airtable', category: 'Productivity & collaboration', url: 'https://airtable.com' },
+  { id: 'google-drive', name: 'Google Drive', category: 'Productivity & collaboration', url: 'https://drive.google.com' },
+  { id: 'dropbox', name: 'Dropbox', category: 'Productivity & collaboration', url: 'https://www.dropbox.com' },
+  { id: 'figma', name: 'Figma', category: 'Design & websites', url: 'https://www.figma.com' },
+  { id: 'canva', name: 'Canva', category: 'Design & websites', url: 'https://www.canva.com' },
+  { id: 'webflow', name: 'Webflow', category: 'Design & websites', url: 'https://webflow.com' },
+  { id: 'wordpress', name: 'WordPress.com', category: 'Design & websites', url: 'https://wordpress.com' },
+  { id: 'framer', name: 'Framer', category: 'Design & websites', url: 'https://www.framer.com' },
+  { id: 'shopify', name: 'Shopify', category: 'Commerce & payments', url: 'https://admin.shopify.com' },
+  { id: 'stripe', name: 'Stripe', category: 'Commerce & payments', url: 'https://dashboard.stripe.com' },
+  { id: 'amazon-seller', name: 'Amazon Seller Central', category: 'Commerce & payments', url: 'https://sellercentral.amazon.com' },
+  { id: 'github', name: 'GitHub', category: 'Developer tools', url: 'https://github.com' },
+  { id: 'gitlab', name: 'GitLab', category: 'Developer tools', url: 'https://gitlab.com' },
+  { id: 'vercel', name: 'Vercel', category: 'Developer tools', url: 'https://vercel.com' },
+  { id: 'product-hunt', name: 'Product Hunt', category: 'Developer tools', url: 'https://www.producthunt.com' }
+] as const
+
+export const CUSTOM_APP_ID = 'custom'
+export type CatalogAppId = (typeof APP_CATALOG)[number]['id']
+
+export function getCatalogApp(id: string) {
+  return APP_CATALOG.find((app) => app.id === id)
+}
+
+export function isCatalogAppId(id: string): id is CatalogAppId {
+  return APP_CATALOG.some((app) => app.id === id)
+}

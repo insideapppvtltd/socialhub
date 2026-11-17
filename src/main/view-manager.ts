@@ -1,0 +1,499 @@
+import {
+  app,
+  clipboard,
+  desktopCapturer,
+  dialog,
+  Menu,
+  session,
+  shell,
+  systemPreferences,
+  WebContentsView,
+  type BrowserWindow,
+  type DownloadItem,
+  type Session,
+  type WebContents
+} from 'electron'
+import path from 'node:path'
+import { AccountManager } from './account-manager'
+import { HubNotifications } from './notifications'
+import { SIDEBAR_WIDTH } from '../shared/layout'
+import { APP_CATALOG } from '../shared/apps'
+import type { Account, DownloadUpdate } from './types'
+
+const DEFAULT_APP = APP_CATALOG[0]
+const userAgentPlatform =
+  process.platform === 'darwin'
+    ? 'Macintosh; Intel Mac OS X 10_15_7'
+    : process.platform === 'win32'
+      ? 'Windows NT 10.0; Win64; x64'
+      : 'X11; Linux x86_64'
+const CHROME_USER_AGENT = `Mozilla/5.0 (${userAgentPlatform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`
+const ALLOWED_PERMISSIONS = new Set([
+  'notifications',
+  'media',
+  'clipboard-read',
+  'clipboard-sanitized-write',
+  'fullscreen',
+  'display-capture'
+])
+const externalProtocols = new Set(['mailto:'])
+
+function isHttpsUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'https:' && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function matchesOrigin(raw: string, expected: string): boolean {
+  try {
+    return new URL(raw).origin === new URL(expected).origin
+  } catch {
+    return false
+  }
+}
+
+export class ViewManager {
+  private readonly views = new Map<string, WebContentsView>()
+  private readonly sessions = new Map<string, Session>()
+  private activeId: string | null = null
+  private sidebarOverlayActive = false
+  private readonly unread = new Map<string, number>()
+  private readonly unsupported = new Set<string>()
+  private readonly bounds = { x: SIDEBAR_WIDTH, y: 0, width: 0, height: 0 }
+
+  constructor(
+    private readonly window: BrowserWindow,
+    private readonly accounts: AccountManager,
+    private readonly notifications: HubNotifications,
+    private readonly onStateChanged: () => void,
+    private readonly onDownload: (update: DownloadUpdate) => void
+  ) {}
+
+  async initialize(): Promise<void> {
+    let accounts = this.accounts.list()
+    if (accounts.length === 0) {
+      this.accounts.add('Personal', DEFAULT_APP.id, DEFAULT_APP.url)
+      accounts = this.accounts.list()
+    }
+    for (const account of accounts) this.createView(account)
+    this.activate(this.accounts.activeId() ?? accounts[0].id)
+  }
+
+  listAccounts(): Account[] {
+    return this.accounts.list().map((account) => ({
+      ...account,
+      unread: this.unread.get(account.id) ?? 0
+    }))
+  }
+
+  activeAccountId(): string | null {
+    return this.activeId
+  }
+
+  accountForWebContents(contents: WebContents): string | undefined {
+    return [...this.views].find(([, view]) => view.webContents === contents)?.[0]
+  }
+
+  isAccountOrigin(id: string, raw: string): boolean {
+    const account = this.accounts.get(id)
+    return Boolean(account && matchesOrigin(raw, account.url))
+  }
+
+  activate(id: string): void {
+    if (!this.views.has(id)) throw new Error('Account view not found.')
+    for (const [accountId, view] of this.views) {
+      view.setVisible(accountId === id && !this.sidebarOverlayActive)
+    }
+    this.activeId = id
+    this.accounts.setActive(id)
+    this.onStateChanged()
+  }
+
+  setSidebarOverlayActive(active: boolean): void {
+    if (this.sidebarOverlayActive === active) return
+    this.sidebarOverlayActive = active
+    if (this.activeId) this.views.get(this.activeId)?.setVisible(!active)
+  }
+
+  addAccount(name: string, appId: string, url: string): Account {
+    const account = this.accounts.add(name, appId, url)
+    this.createView(account)
+    this.activate(account.id)
+    return { ...account, unread: 0 }
+  }
+
+  async removeAccount(id: string): Promise<void> {
+    const account = this.accounts.get(id)
+    if (!account) throw new Error('Account not found.')
+    const view = this.views.get(id)
+    const accountSession = this.sessions.get(id)
+    view?.setVisible(false)
+    if (view) {
+      this.window.contentView.removeChildView(view)
+      view.webContents.close()
+    }
+    if (accountSession) {
+      try {
+        await accountSession.clearStorageData()
+        await accountSession.clearCache()
+      } catch (error) {
+        this.views.delete(id)
+        this.createView(account)
+        this.activate(id)
+        throw error
+      }
+    }
+    this.views.delete(id)
+    this.sessions.delete(id)
+    this.unread.delete(id)
+    this.unsupported.delete(id)
+    this.accounts.remove(id)
+    const nextId = this.accounts.activeId()
+    this.activeId = null
+    if (nextId) this.activate(nextId)
+    this.onStateChanged()
+  }
+
+  rename(id: string, name: string): Account {
+    const account = { ...this.accounts.rename(id, name), unread: this.unread.get(id) ?? 0 }
+    this.updateAccountLabel(id, account.name)
+    this.onStateChanged()
+    return account
+  }
+
+  setMuted(id: string, muted: boolean): Account {
+    const updated = this.accounts.setMuted(id, muted)
+    this.onStateChanged()
+    return { ...updated, unread: this.unread.get(id) ?? 0 }
+  }
+
+  updateAccountLabel(id: string, name: string): void {
+    const view = this.views.get(id)
+    if (view && !view.webContents.isDestroyed()) {
+      void this.installNotificationSupport(id, name, view.webContents)
+    }
+  }
+
+  reload(id: string): void {
+    const view = this.requireView(id)
+    view.webContents.reload()
+  }
+
+  async clearCache(id: string): Promise<void> {
+    const accountSession = this.sessions.get(id)
+    if (!accountSession) throw new Error('Account session not found.')
+    await accountSession.clearCache()
+  }
+
+  resize(x: number, y: number, width: number, height: number): void {
+    this.bounds.x = Math.max(0, Math.round(x))
+    this.bounds.y = Math.max(0, Math.round(y))
+    this.bounds.width = Math.max(0, Math.round(width))
+    this.bounds.height = Math.max(0, Math.round(height))
+    for (const view of this.views.values()) view.setBounds(this.bounds)
+  }
+
+  resizeToContent(width: number, height: number): void {
+    this.resize(SIDEBAR_WIDTH, 0, width - SIDEBAR_WIDTH, height)
+  }
+
+  private createView(account: Omit<Account, 'unread'>): void {
+    const partition = `persist:account-${account.id}`
+    const existingSession = this.sessions.get(account.id)
+    const accountSession = existingSession ?? session.fromPartition(partition)
+    accountSession.setUserAgent(CHROME_USER_AGENT)
+    accountSession.setSpellCheckerEnabled(true)
+    if (!existingSession) this.configureSession(account.id, accountSession)
+    const view = new WebContentsView({
+      webPreferences: {
+        session: accountSession,
+        preload: path.join(__dirname, '../preload/site.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: true
+      }
+    })
+    view.setBackgroundColor('#ffffff')
+    view.setBounds(this.bounds)
+    view.setVisible(false)
+    this.window.contentView.addChildView(view)
+    this.views.set(account.id, view)
+    this.sessions.set(account.id, accountSession)
+    this.unread.set(account.id, 0)
+    this.configureWebContents(account.id, view.webContents)
+    void view.webContents.loadURL(account.url)
+  }
+
+  private configureSession(accountId: string, accountSession: Session): void {
+    const notificationsEnabled = () => {
+      const account = this.accounts.get(accountId)
+      return Boolean(account && !account.muted && !this.accounts.preferences().doNotDisturb)
+    }
+    accountSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+      const origin = details?.requestingUrl ?? webContents.getURL()
+      if (
+        !ALLOWED_PERMISSIONS.has(permission) ||
+        !this.isAccountOrigin(accountId, origin) ||
+        (permission === 'notifications' && !notificationsEnabled())
+      ) {
+        callback(false)
+        return
+      }
+      if (permission === 'media' && process.platform === 'darwin') {
+        const requestedMedia: Array<'audio' | 'video'> =
+          'mediaTypes' in details && details.mediaTypes ? details.mediaTypes : ['audio']
+        void Promise.all(
+          [...new Set(requestedMedia)].map(async (mediaType) => {
+            const device = mediaType === 'video' ? 'camera' : 'microphone'
+            const status = systemPreferences.getMediaAccessStatus(device)
+            if (status === 'granted') return true
+            if (status !== 'not-determined') {
+              console.warn(`${device} permission is ${status}; enable it in macOS Privacy & Security settings.`)
+              return false
+            }
+            return systemPreferences.askForMediaAccess(device)
+          })
+        ).then((granted) => callback(granted.every(Boolean))).catch((error: unknown) => {
+          console.error('Could not request macOS media permission:', error)
+          callback(false)
+        })
+        return
+      }
+      callback(true)
+    })
+    accountSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+      if (permission === 'media' && process.platform === 'darwin') {
+        if (!this.isAccountOrigin(accountId, requestingOrigin)) return false
+        if (details.mediaType === 'unknown') {
+          return (
+            systemPreferences.getMediaAccessStatus('microphone') === 'granted' &&
+            systemPreferences.getMediaAccessStatus('camera') === 'granted'
+          )
+        }
+        return systemPreferences.getMediaAccessStatus(details.mediaType === 'video' ? 'camera' : 'microphone') === 'granted'
+      }
+      return (
+        ALLOWED_PERMISSIONS.has(permission) &&
+        this.isAccountOrigin(accountId, requestingOrigin) &&
+        (permission !== 'notifications' || notificationsEnabled())
+      )
+    })
+    accountSession.setDisplayMediaRequestHandler((request, callback) => {
+      void (async () => {
+        try {
+          if (!this.isAccountOrigin(accountId, request.securityOrigin ?? '')) {
+            callback({})
+            return
+          }
+          const sources = await desktopCapturer.getSources({
+            types: ['screen', 'window'],
+            fetchWindowIcons: true
+          })
+          if (sources.length === 0) {
+            callback({})
+            return
+          }
+          const choice = await dialog.showMessageBox(this.window, {
+            type: 'question',
+            title: 'Share your screen',
+            message: 'Choose a screen or window to share.',
+            buttons: [...sources.map((source) => source.name), 'Cancel'],
+            cancelId: sources.length,
+            noLink: true
+          })
+          const source = sources[choice.response]
+          if (!source) {
+            callback({})
+            return
+          }
+          callback({
+            video: source,
+            audio: request.audioRequested ? 'loopback' : undefined
+          })
+        } catch (error) {
+          console.error('Could not prepare a screen-sharing source:', error)
+          callback({})
+        }
+      })()
+    })
+    accountSession.on('will-download', (_event, item, webContents) => {
+      this.handleDownload(accountId, item, webContents)
+    })
+  }
+
+  private configureWebContents(accountId: string, contents: WebContents): void {
+    contents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const modifier = process.platform === 'darwin' ? input.meta : input.control
+      if (!modifier) return
+      if (/^[1-9]$/.test(input.key)) {
+        const target = this.accounts.list()[Number(input.key) - 1]
+        if (target) {
+          event.preventDefault()
+          this.activate(target.id)
+        }
+      } else if (input.key.toLowerCase() === 'r') {
+        event.preventDefault()
+        this.reload(accountId)
+      } else if (input.key.toLowerCase() === 'n') {
+        event.preventDefault()
+        this.onStateChanged()
+        this.window.webContents.send('hub:add-account-shortcut')
+      }
+    })
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isHttpsUrl(url)) {
+        void contents.loadURL(url)
+      } else {
+        try {
+          const parsed = new URL(url)
+          if (externalProtocols.has(parsed.protocol)) void shell.openExternal(url)
+        } catch {
+          // Invalid URLs are denied.
+        }
+      }
+      return { action: 'deny' }
+    })
+    contents.on('will-navigate', (event, url) => {
+      let destination: URL
+      try {
+        destination = new URL(url)
+      } catch {
+        event.preventDefault()
+        return
+      }
+      if (
+        destination.protocol === 'https:' &&
+        !destination.username &&
+        !destination.password &&
+        destination.hostname !== 'localhost' &&
+        !destination.hostname.endsWith('.localhost')
+      ) return
+      event.preventDefault()
+      if (externalProtocols.has(destination.protocol)) void shell.openExternal(url)
+    })
+    contents.on('page-title-updated', (event, title) => {
+      event.preventDefault()
+      if (
+        this.accounts.get(accountId)?.appId === 'whatsapp' &&
+        /browser.{0,20}not supported|unsupported browser/i.test(title) &&
+        !this.unsupported.has(accountId)
+      ) {
+        this.unsupported.add(accountId)
+        const view = this.views.get(accountId)
+        if (view) {
+          const reloadUrl = JSON.stringify(this.accounts.get(accountId)?.url ?? DEFAULT_APP.url)
+          const html = `<!doctype html><meta charset="utf-8"><title>Browser not supported</title><style>body{font:16px system-ui;background:#f7f9f8;color:#18231d;display:grid;place-items:center;height:100vh;margin:0}.card{max-width:440px;text-align:center;padding:36px;border:1px solid #dfe7e1;border-radius:18px;background:white}button{border:0;border-radius:9px;background:#168c55;color:white;padding:11px 18px;font:inherit;cursor:pointer}</style><main class="card"><h2>Browser not supported</h2><p>This app could not use this browser session. Reload to try again.</p><button onclick="location.replace(${reloadUrl})">Reload</button></main>`
+          void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+        }
+        return
+      }
+      this.unsupported.delete(accountId)
+      const match = title.match(/^\((\d+)\)/)
+      this.unread.set(accountId, match ? Number(match[1]) : 0)
+      this.onStateChanged()
+    })
+    contents.on('dom-ready', () => {
+      void this.installNotificationSupport(accountId, this.accounts.get(accountId)?.name ?? accountId, contents)
+    })
+    contents.on('context-menu', (_event, params) => {
+      const menu = Menu.buildFromTemplate([
+        ...(params.dictionarySuggestions ?? []).map((suggestion) => ({
+          label: suggestion,
+          click: () => contents.replaceMisspelling(suggestion)
+        })),
+        ...(params.dictionarySuggestions?.length ? [{ type: 'separator' as const }] : []),
+        { label: 'Copy', role: 'copy' as const, enabled: params.editFlags.canCopy },
+        { label: 'Paste', role: 'paste' as const, enabled: params.editFlags.canPaste },
+        ...(params.linkURL
+          ? [{ label: 'Copy link', click: () => clipboard.writeText(params.linkURL) }]
+          : [])
+      ])
+      menu.popup({ window: this.window })
+    })
+    contents.on('render-process-gone', (_event, details) => {
+      console.error(`Web view ${accountId} renderer exited: ${details.reason}`)
+    })
+  }
+
+  private async installNotificationSupport(
+    accountId: string,
+    accountName: string,
+    contents: WebContents
+  ): Promise<void> {
+    if (contents.isDestroyed()) return
+    const label = JSON.stringify(accountName)
+    try {
+      await contents.executeJavaScript(
+        `(() => {
+          window.__socialHubAccountName = ${label};
+          const NativeNotification = window.Notification;
+          if (!NativeNotification || NativeNotification.__hubWrapped) return;
+          class HubNotification extends NativeNotification {
+            constructor(title, options) {
+              super(\`[\${window.__socialHubAccountName}] \${title}\`, options);
+              this.addEventListener('click', () => window.socialHubNotification?.clicked());
+            }
+            static get permission() { return NativeNotification.permission; }
+            static requestPermission() { return NativeNotification.requestPermission(); }
+          }
+          Object.defineProperty(HubNotification, '__hubWrapped', { value: true });
+          Object.defineProperty(window, 'Notification', { configurable: true, value: HubNotification });
+        })();`
+      )
+    } catch (error) {
+      if (!contents.isDestroyed()) {
+        console.error(`Could not enable labeled notifications for ${accountId}:`, error)
+      }
+    }
+  }
+
+  private handleDownload(accountId: string, item: DownloadItem, _contents: WebContents): void {
+    const account = this.accounts.get(accountId)
+    const filename = path.basename(item.getFilename())
+    const destination = path.join(app.getPath('downloads'), filename)
+    item.setSavePath(destination)
+    const publish = (state: DownloadUpdate['state']) => {
+      const update: DownloadUpdate = {
+        accountId,
+        filename,
+        receivedBytes: item.getReceivedBytes(),
+        totalBytes: item.getTotalBytes(),
+        state,
+        path: state === 'completed' ? destination : undefined
+      }
+      this.onDownload(update)
+      if (state === 'completed' || state === 'interrupted') {
+        this.notifications.notifyDownload(update)
+      }
+    }
+    item.on('updated', () => {
+      if (item.isPaused()) return
+      this.onDownload({
+        accountId,
+        filename,
+        receivedBytes: item.getReceivedBytes(),
+        totalBytes: item.getTotalBytes(),
+        state: 'progressing'
+      })
+    })
+    item.once('done', (_event, state) => {
+      if (state === 'completed') {
+        publish('completed')
+      } else {
+        publish(state === 'cancelled' ? 'cancelled' : 'interrupted')
+      }
+    })
+    if (!account) console.warn(`Download began for removed account ${accountId}`)
+  }
+
+  private requireView(id: string): WebContentsView {
+    const view = this.views.get(id)
+    if (!view) throw new Error('Account view not found.')
+    return view
+  }
+}
