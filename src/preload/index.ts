@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Account, DownloadUpdate, HubState, NewAccount, Preferences, Workspace } from '../main/types'
+import type { Account, AccountPermissions, DownloadUpdate, HubState, NewAccount, Preferences, Workspace } from '../main/types'
 
 export interface SocialHubAPI {
   getState(): Promise<HubState>
@@ -8,6 +8,10 @@ export interface SocialHubAPI {
   activateAccount(id: string): Promise<void>
   renameAccount(id: string, name: string): Promise<Account>
   setMuted(id: string, muted: boolean): Promise<Account>
+  setAccountPermissions(id: string, permissions: Partial<AccountPermissions>): Promise<Account>
+  getGlobalDefaultPermissions(): Promise<AccountPermissions>
+  updateGlobalDefaultPermissions(permissions: Partial<AccountPermissions>): Promise<AccountPermissions>
+  resetGlobalDefaultPermissions(): Promise<AccountPermissions>
   reloadAccount(id: string): Promise<void>
   clearCache(id: string): Promise<void>
   removeAccount(id: string): Promise<void>
@@ -29,6 +33,10 @@ const api: SocialHubAPI = {
   activateAccount: (id) => ipcRenderer.invoke('hub:activate-account', id),
   renameAccount: (id, name) => ipcRenderer.invoke('hub:rename-account', id, name),
   setMuted: (id, muted) => ipcRenderer.invoke('hub:set-muted', id, muted),
+  setAccountPermissions: (id, permissions) => ipcRenderer.invoke('hub:set-account-permissions', id, permissions),
+  getGlobalDefaultPermissions: () => ipcRenderer.invoke('hub:get-global-default-permissions'),
+  updateGlobalDefaultPermissions: (permissions) => ipcRenderer.invoke('hub:update-global-default-permissions', permissions),
+  resetGlobalDefaultPermissions: () => ipcRenderer.invoke('hub:reset-global-default-permissions'),
   reloadAccount: (id) => ipcRenderer.invoke('hub:reload-account', id),
   clearCache: (id) => ipcRenderer.invoke('hub:clear-cache', id),
   removeAccount: (id) => ipcRenderer.invoke('hub:remove-account', id),

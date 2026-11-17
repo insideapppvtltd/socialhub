@@ -18,7 +18,8 @@ import { AccountManager } from './account-manager'
 import { HubNotifications } from './notifications'
 import { SIDEBAR_WIDTH } from '../shared/layout'
 import { APP_CATALOG } from '../shared/apps'
-import type { Account, DownloadUpdate } from './types'
+import type { Account, AccountPermissions, DownloadUpdate } from './types'
+import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
 const DEFAULT_APP = APP_CATALOG[0]
 const userAgentPlatform =
@@ -34,7 +35,8 @@ const ALLOWED_PERMISSIONS = new Set([
   'clipboard-read',
   'clipboard-sanitized-write',
   'fullscreen',
-  'display-capture'
+  'display-capture',
+  'geolocation'
 ])
 const externalProtocols = new Set(['mailto:'])
 
@@ -156,8 +158,14 @@ export class ViewManager {
     if (this.activeId) this.views.get(this.activeId)?.setVisible(!active)
   }
 
-  addAccount(name: string, appId: string, url: string, workspaceId?: string): Account {
-    const account = this.accounts.add(name, appId, url, workspaceId)
+  addAccount(
+    name: string,
+    appId: string,
+    url: string,
+    workspaceId?: string,
+    permissions?: Partial<AccountPermissions>
+  ): Account {
+    const account = this.accounts.add(name, appId, url, workspaceId, permissions)
     this.createView(account)
     if (this.accounts.activeWorkspaceId() !== account.workspaceId) {
       this.accounts.setActiveWorkspace(account.workspaceId)
@@ -211,6 +219,12 @@ export class ViewManager {
 
   setMuted(id: string, muted: boolean): Account {
     const updated = this.accounts.setMuted(id, muted)
+    this.onStateChanged()
+    return { ...updated, unread: this.unread.get(id) ?? 0 }
+  }
+
+  setAccountPermissions(id: string, permissions: Partial<AccountPermissions>): Account {
+    const updated = this.accounts.updatePermissions(id, permissions)
     this.onStateChanged()
     return { ...updated, unread: this.unread.get(id) ?? 0 }
   }
@@ -274,63 +288,142 @@ export class ViewManager {
   }
 
   private configureSession(accountId: string, accountSession: Session): void {
-    const notificationsEnabled = () => {
+    const getPerms = (): AccountPermissions =>
+      this.accounts.get(accountId)?.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+
+    const notificationsEnabled = (): boolean => {
       const account = this.accounts.get(accountId)
-      return Boolean(account && !account.muted && !this.accounts.preferences().doNotDisturb)
+      return Boolean(
+        account &&
+        !account.muted &&
+        !this.accounts.preferences().doNotDisturb &&
+        getPerms().notifications === 'allow'
+      )
     }
+
     accountSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
       const origin = details?.requestingUrl ?? webContents.getURL()
       if (
         !ALLOWED_PERMISSIONS.has(permission) ||
-        !this.isAccountOrigin(accountId, origin) ||
-        (permission === 'notifications' && !notificationsEnabled())
+        !this.isAccountOrigin(accountId, origin)
       ) {
         callback(false)
         return
       }
-      if (permission === 'media' && process.platform === 'darwin') {
-        const requestedMedia: Array<'audio' | 'video'> =
-          'mediaTypes' in details && details.mediaTypes ? details.mediaTypes : ['audio']
-        void Promise.all(
-          [...new Set(requestedMedia)].map(async (mediaType) => {
-            const device = mediaType === 'video' ? 'camera' : 'microphone'
-            const status = systemPreferences.getMediaAccessStatus(device)
-            if (status === 'granted') return true
-            if (status !== 'not-determined') {
-              console.warn(`${device} permission is ${status}; enable it in macOS Privacy & Security settings.`)
-              return false
-            }
-            return systemPreferences.askForMediaAccess(device)
-          })
-        ).then((granted) => callback(granted.every(Boolean))).catch((error: unknown) => {
-          console.error('Could not request macOS media permission:', error)
-          callback(false)
-        })
+
+      const perms = getPerms()
+
+      if (permission === 'notifications') {
+        callback(notificationsEnabled())
         return
       }
+
+      if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') {
+        callback(perms.clipboard === 'allow')
+        return
+      }
+
+      if (permission === 'geolocation') {
+        callback(perms.geolocation === 'allow')
+        return
+      }
+
+      if (permission === 'media') {
+        const requestedMedia: Array<'audio' | 'video'> =
+          'mediaTypes' in details && details.mediaTypes ? details.mediaTypes : ['audio']
+        if (requestedMedia.includes('video') && perms.camera !== 'allow') {
+          callback(false)
+          return
+        }
+        if (requestedMedia.includes('audio') && perms.microphone !== 'allow') {
+          callback(false)
+          return
+        }
+
+        if (process.platform === 'darwin') {
+          const uniqueMedia = [...new Set(requestedMedia)]
+          void Promise.all(
+            uniqueMedia.map(async (mediaType) => {
+              const device = mediaType === 'video' ? 'camera' : 'microphone'
+              const status = systemPreferences.getMediaAccessStatus(device)
+              if (status === 'granted') return true
+              if (status !== 'not-determined') {
+                console.warn(`${device} permission is ${status}; enable it in macOS Privacy & Security settings.`)
+                return false
+              }
+              return systemPreferences.askForMediaAccess(device)
+            })
+          ).then((granted) => callback(granted.every(Boolean))).catch((error: unknown) => {
+            console.error('Could not request macOS media permission:', error)
+            callback(false)
+          })
+          return
+        }
+
+        callback(true)
+        return
+      }
+
       callback(true)
     })
+
     accountSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
-      if (permission === 'media' && process.platform === 'darwin') {
-        if (!this.isAccountOrigin(accountId, requestingOrigin)) return false
-        if (details.mediaType === 'unknown') {
-          return (
-            systemPreferences.getMediaAccessStatus('microphone') === 'granted' &&
-            systemPreferences.getMediaAccessStatus('camera') === 'granted'
-          )
-        }
-        return systemPreferences.getMediaAccessStatus(details.mediaType === 'video' ? 'camera' : 'microphone') === 'granted'
+      if (
+        !ALLOWED_PERMISSIONS.has(permission) ||
+        !this.isAccountOrigin(accountId, requestingOrigin)
+      ) {
+        return false
       }
-      return (
-        ALLOWED_PERMISSIONS.has(permission) &&
-        this.isAccountOrigin(accountId, requestingOrigin) &&
-        (permission !== 'notifications' || notificationsEnabled())
-      )
+
+      const perms = getPerms()
+
+      if (permission === 'notifications') {
+        return notificationsEnabled()
+      }
+
+      if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') {
+        return perms.clipboard === 'allow'
+      }
+
+      if (permission === 'geolocation') {
+        return perms.geolocation === 'allow'
+      }
+
+      if (permission === 'media') {
+        if (details.mediaType === 'video') {
+          if (perms.camera !== 'allow') return false
+        } else if (details.mediaType === 'audio') {
+          if (perms.microphone !== 'allow') return false
+        } else {
+          if (perms.camera !== 'allow' && perms.microphone !== 'allow') return false
+        }
+
+        if (process.platform === 'darwin') {
+          if (details.mediaType === 'unknown') {
+            return (
+              (perms.microphone !== 'allow' || systemPreferences.getMediaAccessStatus('microphone') === 'granted') &&
+              (perms.camera !== 'allow' || systemPreferences.getMediaAccessStatus('camera') === 'granted') &&
+              ((perms.microphone === 'allow' && systemPreferences.getMediaAccessStatus('microphone') === 'granted') ||
+                (perms.camera === 'allow' && systemPreferences.getMediaAccessStatus('camera') === 'granted'))
+            )
+          }
+          const device = details.mediaType === 'video' ? 'camera' : 'microphone'
+          return systemPreferences.getMediaAccessStatus(device) === 'granted'
+        }
+        return true
+      }
+
+      return true
     })
+
     accountSession.setDisplayMediaRequestHandler((request, callback) => {
       void (async () => {
         try {
           if (!this.isAccountOrigin(accountId, request.securityOrigin ?? '')) {
+            callback({})
+            return
+          }
+          if (getPerms().screenShare !== 'allow') {
             callback({})
             return
           }
@@ -365,7 +458,12 @@ export class ViewManager {
         }
       })()
     })
+
     accountSession.on('will-download', (_event, item, webContents) => {
+      if (getPerms().downloads !== 'allow') {
+        item.cancel()
+        return
+      }
       this.handleDownload(accountId, item, webContents)
     })
   }

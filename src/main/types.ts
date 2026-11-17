@@ -1,3 +1,25 @@
+export type PermissionState = 'allow' | 'block'
+
+export interface AccountPermissions {
+  camera: PermissionState
+  microphone: PermissionState
+  notifications: PermissionState
+  screenShare: PermissionState
+  clipboard: PermissionState
+  geolocation: PermissionState
+  downloads: PermissionState
+}
+
+export const DEFAULT_ACCOUNT_PERMISSIONS: AccountPermissions = {
+  camera: 'allow',
+  microphone: 'allow',
+  notifications: 'allow',
+  screenShare: 'allow',
+  clipboard: 'allow',
+  geolocation: 'block',
+  downloads: 'allow'
+}
+
 export interface Workspace {
   id: string
   name: string
@@ -18,6 +40,7 @@ export interface Account {
   appId: string
   url: string
   unread: number
+  permissions: AccountPermissions
 }
 
 export interface NewAccount {
@@ -25,6 +48,7 @@ export interface NewAccount {
   appId: string
   url?: string
   workspaceId?: string
+  permissions?: Partial<AccountPermissions>
 }
 
 export interface Preferences {
@@ -55,4 +79,5 @@ export interface HubState {
   accounts: Account[]
   activeAccountId: string | null
   preferences: Preferences
+  globalDefaultPermissions: AccountPermissions
 }

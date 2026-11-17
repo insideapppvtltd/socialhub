@@ -1,12 +1,37 @@
 import Store from 'electron-store'
 import { randomUUID } from 'node:crypto'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
-import type { Account, Preferences, WindowBounds, Workspace } from './types'
+import type { Account, AccountPermissions, Preferences, WindowBounds, Workspace } from './types'
+import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
 export type StoredAccount = Omit<Account, 'unread'>
 
 export const DEFAULT_WORKSPACE_ID = 'workspace-default-personal'
 export const DEFAULT_WORKSPACE_NAME = 'Personal'
+
+export const PERMISSION_KEYS: ReadonlyArray<keyof AccountPermissions> = [
+  'camera',
+  'microphone',
+  'notifications',
+  'screenShare',
+  'clipboard',
+  'geolocation',
+  'downloads'
+] as const
+
+export function sanitizePermissions(raw?: Partial<AccountPermissions> | null): AccountPermissions {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_ACCOUNT_PERMISSIONS }
+  }
+  const result: AccountPermissions = { ...DEFAULT_ACCOUNT_PERMISSIONS }
+  for (const key of PERMISSION_KEYS) {
+    const val = raw[key]
+    if (val === 'allow' || val === 'block') {
+      result[key] = val
+    }
+  }
+  return result
+}
 
 interface StoreData {
   workspaces: Workspace[]
@@ -15,6 +40,7 @@ interface StoreData {
   activeAccountId: string | null
   preferences: Preferences
   windowBounds: WindowBounds
+  globalDefaultPermissions: AccountPermissions
 }
 
 const colors = ['#25a66a', '#4a82d8', '#a16bd3', '#e08a35', '#d75d72', '#248e9a']
@@ -37,7 +63,8 @@ const store = new Store<StoreData>({
       minimizeToTray: true,
       launchAtStartup: false
     },
-    windowBounds: { width: 1180, height: 780 }
+    windowBounds: { width: 1180, height: 780 },
+    globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
   }
 })
 
@@ -79,10 +106,32 @@ export class AccountManager {
           updated = { ...updated, appId: legacyApp.id, url: legacyApp.url }
           modified = true
         }
+        const currentPerms = updated.permissions
+        const sanitized = sanitizePermissions(currentPerms)
+        const needsPermMigration =
+          !currentPerms ||
+          PERMISSION_KEYS.some((key) => !currentPerms[key] || (currentPerms[key] !== 'allow' && currentPerms[key] !== 'block'))
+        if (needsPermMigration) {
+          updated = { ...updated, permissions: sanitized }
+          modified = true
+        }
         return updated
       })
       if (modified) {
         store.set('accounts', migratedAccounts)
+      }
+    }
+
+    const rawGlobalPerms = store.get('globalDefaultPermissions') as AccountPermissions | undefined
+    if (!rawGlobalPerms || typeof rawGlobalPerms !== 'object') {
+      store.set('globalDefaultPermissions', { ...DEFAULT_ACCOUNT_PERMISSIONS })
+    } else {
+      const sanitizedGlobal = sanitizePermissions(rawGlobalPerms)
+      const needsGlobalMigration = PERMISSION_KEYS.some(
+        (key) => rawGlobalPerms[key] !== sanitizedGlobal[key]
+      )
+      if (needsGlobalMigration) {
+        store.set('globalDefaultPermissions', sanitizedGlobal)
       }
     }
   }
@@ -197,6 +246,9 @@ export class AccountManager {
         const legacyApp = APP_CATALOG[0]
         fixed = { ...fixed, appId: legacyApp.id, url: legacyApp.url }
       }
+      if (!fixed.permissions) {
+        fixed = { ...fixed, permissions: sanitizePermissions(fixed.permissions) }
+      }
       return fixed
     })
   }
@@ -205,7 +257,13 @@ export class AccountManager {
     return this.list().find((account) => account.id === id)
   }
 
-  add(name: string, appId: string, url: string, workspaceId?: string): StoredAccount {
+  add(
+    name: string,
+    appId: string,
+    url: string,
+    workspaceId?: string,
+    permissions?: Partial<AccountPermissions>
+  ): StoredAccount {
     const cleanName = name.trim().slice(0, 40)
     if (!cleanName) throw new Error('Account name cannot be empty.')
     if (appId !== CUSTOM_APP_ID && !getCatalogApp(appId)) throw new Error('Unknown app.')
@@ -216,6 +274,10 @@ export class AccountManager {
     }
 
     const accounts = this.list()
+    const effectivePermissions = permissions
+      ? sanitizePermissions({ ...this.getGlobalDefaultPermissions(), ...permissions })
+      : { ...this.getGlobalDefaultPermissions() }
+
     const account: StoredAccount = {
       id: randomUUID(),
       workspaceId: targetWorkspaceId,
@@ -224,7 +286,8 @@ export class AccountManager {
       muted: false,
       createdAt: new Date().toISOString(),
       appId,
-      url
+      url,
+      permissions: effectivePermissions
     }
     store.set('accounts', [...accounts, account])
     store.set('activeAccountId', account.id)
@@ -239,6 +302,76 @@ export class AccountManager {
 
   setMuted(id: string, muted: boolean): StoredAccount {
     return this.update(id, { muted })
+  }
+
+  updatePermissions(accountId: string, permissions: Partial<AccountPermissions>): StoredAccount {
+    const existing = this.get(accountId)
+    if (!existing) throw new Error('Account not found.')
+
+    if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      throw new Error('Permissions must be an object.')
+    }
+
+    const keys = Object.keys(permissions)
+    for (const key of keys) {
+      if (!PERMISSION_KEYS.includes(key as keyof AccountPermissions)) {
+        throw new Error(`Unexpected permission key: "${key}".`)
+      }
+      const val = (permissions as Record<string, unknown>)[key]
+      if (val !== 'allow' && val !== 'block') {
+        throw new Error(`Invalid permission state for "${key}": "${String(val)}". Expected 'allow' or 'block'.`)
+      }
+    }
+
+    const current = existing.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+    const merged: AccountPermissions = {
+      ...current,
+      ...permissions
+    }
+    return this.update(accountId, { permissions: merged })
+  }
+
+  resetPermissions(accountId: string): StoredAccount {
+    return this.updatePermissions(accountId, this.getGlobalDefaultPermissions())
+  }
+
+  getGlobalDefaultPermissions(): AccountPermissions {
+    const raw = store.get('globalDefaultPermissions')
+    return sanitizePermissions(raw)
+  }
+
+  updateGlobalDefaultPermissions(permissions: Partial<AccountPermissions>): AccountPermissions {
+    if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      throw new Error('Permissions must be an object.')
+    }
+
+    const keys = Object.keys(permissions)
+    if (keys.length === 0) {
+      return this.getGlobalDefaultPermissions()
+    }
+
+    for (const key of keys) {
+      if (!PERMISSION_KEYS.includes(key as keyof AccountPermissions)) {
+        throw new Error(`Unexpected permission key: "${key}".`)
+      }
+      const val = (permissions as Record<string, unknown>)[key]
+      if (val !== 'allow' && val !== 'block') {
+        throw new Error(`Invalid permission state for "${key}": "${String(val)}". Expected 'allow' or 'block'.`)
+      }
+    }
+
+    const current = this.getGlobalDefaultPermissions()
+    const merged: AccountPermissions = {
+      ...current,
+      ...permissions
+    }
+    store.set('globalDefaultPermissions', merged)
+    return merged
+  }
+
+  resetGlobalDefaultPermissions(): AccountPermissions {
+    store.set('globalDefaultPermissions', { ...DEFAULT_ACCOUNT_PERMISSIONS })
+    return { ...DEFAULT_ACCOUNT_PERMISSIONS }
   }
 
   remove(id: string): void {

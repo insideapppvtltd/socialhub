@@ -2,7 +2,7 @@ import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AccountManager } from './account-manager'
 import type { HubNotifications } from './notifications'
 import type { ViewManager } from './view-manager'
-import type { HubState, Preferences } from './types'
+import type { AccountPermissions, HubState, Preferences } from './types'
 import { CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getGoogleIdToken } from './google-oauth'
 
@@ -80,11 +80,23 @@ export function registerIpc(
     }
     if (candidate.appId === CUSTOM_APP_ID) {
       if (!isHttpsUrl(candidate.url)) throw new Error('Enter a valid HTTPS website URL.')
-      return views.addAccount(candidate.name, CUSTOM_APP_ID, new URL(candidate.url).href, workspaceId)
+      return views.addAccount(
+        candidate.name,
+        CUSTOM_APP_ID,
+        new URL(candidate.url).href,
+        workspaceId,
+        candidate.permissions as Partial<AccountPermissions> | undefined
+      )
     }
     const app = getCatalogApp(candidate.appId)
     if (!app) throw new Error('Select an app or website.')
-    return views.addAccount(candidate.name, app.id, app.url, workspaceId)
+    return views.addAccount(
+      candidate.name,
+      app.id,
+      app.url,
+      workspaceId,
+      candidate.permissions as Partial<AccountPermissions> | undefined
+    )
   })
   ipcMain.handle('hub:add-workspace', (event, name: unknown) => {
     guard(event)
@@ -132,6 +144,35 @@ export function registerIpc(
     const account = views.setMuted(id, muted)
     window.webContents.send('hub:state', getState())
     return account
+  })
+  ipcMain.handle('hub:set-account-permissions', (event, id: unknown, permissions: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      throw new Error('Permissions must be an object.')
+    }
+    const account = views.setAccountPermissions(id, permissions as Partial<AccountPermissions>)
+    window.webContents.send('hub:state', getState())
+    return account
+  })
+  ipcMain.handle('hub:get-global-default-permissions', (event) => {
+    guard(event)
+    return accounts.getGlobalDefaultPermissions()
+  })
+  ipcMain.handle('hub:update-global-default-permissions', (event, permissions: unknown) => {
+    guard(event)
+    if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      throw new Error('Permissions must be an object.')
+    }
+    const updated = accounts.updateGlobalDefaultPermissions(permissions as Partial<AccountPermissions>)
+    window.webContents.send('hub:state', getState())
+    return updated
+  })
+  ipcMain.handle('hub:reset-global-default-permissions', (event) => {
+    guard(event)
+    const reset = accounts.resetGlobalDefaultPermissions()
+    window.webContents.send('hub:state', getState())
+    return reset
   })
   ipcMain.handle('hub:reload-account', (event, id: unknown) => {
     guard(event)

@@ -3,24 +3,32 @@ import hubLogo from '../assets/icon_wh_small.png'
 import {
   Bell,
   BellOff,
+  Camera,
   Check,
   ChevronDown,
   CircleHelp,
+  Clipboard,
   Download,
   Layers,
   LogIn,
   LogOut,
+  MapPin,
+  Mic,
+  Monitor,
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Settings2,
+  Shield,
   ShieldCheck,
   Trash2,
   Volume2,
   VolumeX
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
-import type { Account, DownloadUpdate, HubState, Workspace } from '../main/types'
+import type { Account, AccountPermissions, DownloadUpdate, HubState, PermissionState, Workspace } from '../main/types'
+import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
 
@@ -33,6 +41,8 @@ type EditorDialog =
   | { kind: 'add-workspace' }
   | { kind: 'rename-workspace'; workspace: Workspace }
   | { kind: 'delete-workspace'; workspace: Workspace }
+  | { kind: 'permissions'; account: Account }
+  | { kind: 'global-permissions' }
   | null
 
 const initialState: HubState = {
@@ -40,7 +50,8 @@ const initialState: HubState = {
   activeWorkspaceId: null,
   accounts: [],
   activeAccountId: null,
-  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false }
+  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false },
+  globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
 }
 
 function getInitials(name: string): string {
@@ -420,6 +431,16 @@ export default function App() {
             <span>Do Not Disturb</span>
             <span className={`switch ${state.preferences.doNotDisturb ? 'on' : ''}`} />
           </button>
+          <button
+            className="sidebar-nav-item permissions-nav-btn"
+            onClick={() => setDialog({ kind: 'global-permissions' })}
+          >
+            <span className="nav-item-left">
+              <ShieldCheck size={15} />
+              <span>Permissions</span>
+            </span>
+            <span className="nav-item-badge">Defaults</span>
+          </button>
           <div className="footer-row">
             <span><Settings2 size={15} /> Preferences</span>
             <div className="tray-setting">
@@ -491,13 +512,22 @@ export default function App() {
           account={state.accounts.find((account) => account.id === menu.id)}
           x={menu.x}
           y={menu.y}
-          onRename={(account) => setDialog({ kind: 'rename', account })}
+          onRename={(account) => {
+            setMenu(null)
+            setDialog({ kind: 'rename', account })
+          }}
           onMute={(account) => void invoke(() => window.socialHub.setMuted(account.id, !account.muted))}
           onReload={(account) => void invoke(() => window.socialHub.reloadAccount(account.id))}
           onClearCache={(account) => {
+            setMenu(null)
             setDialog({ kind: 'confirm-cache', account })
           }}
+          onPermissions={(account) => {
+            setMenu(null)
+            setDialog({ kind: 'permissions', account })
+          }}
           onRemove={(account) => {
+            setMenu(null)
             setDialog({ kind: 'confirm-remove', account })
           }}
         />
@@ -513,6 +543,23 @@ export default function App() {
           onSubmitAccount={(name, appId, url, workspaceId) => void submitAccount(name, appId, url, workspaceId)}
           onSubmitAddWorkspace={(name) => void submitAddWorkspace(name)}
           onSubmitRenameWorkspace={(id, name) => void submitRenameWorkspace(id, name)}
+          onSubmitPermissions={async (permissions) => {
+            if (dialog.kind !== 'permissions') return
+            await window.socialHub.setAccountPermissions(dialog.account.id, permissions)
+            showToast(`Permissions updated for ${dialog.account.name}.`)
+            setDialog(null)
+          }}
+          globalDefaults={state.globalDefaultPermissions}
+          onSubmitGlobalPermissions={async (permissions) => {
+            await window.socialHub.updateGlobalDefaultPermissions(permissions)
+            showToast('Default permissions updated.')
+            setDialog(null)
+          }}
+          onResetGlobalPermissions={async () => {
+            const reset = await window.socialHub.resetGlobalDefaultPermissions()
+            showToast('Default permissions reset to initial values.')
+            return reset
+          }}
           onConfirm={() => {
             if (dialog.kind === 'confirm-remove') {
               void invoke(() => window.socialHub.removeAccount(dialog.account.id), 'Account removed.')
@@ -537,23 +584,53 @@ function HubDialog({
   workspaces,
   accounts,
   activeWorkspaceId,
+  globalDefaults,
   onClose,
   onSubmitAccount,
   onSubmitAddWorkspace,
   onSubmitRenameWorkspace,
+  onSubmitPermissions,
+  onSubmitGlobalPermissions,
+  onResetGlobalPermissions,
   onConfirm
 }: {
   dialog: Exclude<EditorDialog, null>
   workspaces: Workspace[]
   accounts: Account[]
   activeWorkspaceId: string | null
+  globalDefaults: AccountPermissions
   onClose: () => void
   onSubmitAccount: (name: string, appId?: string, url?: string, workspaceId?: string) => void
   onSubmitAddWorkspace: (name: string) => void
   onSubmitRenameWorkspace: (id: string, name: string) => void
+  onSubmitPermissions: (permissions: AccountPermissions) => Promise<void>
+  onSubmitGlobalPermissions: (permissions: AccountPermissions) => Promise<void>
+  onResetGlobalPermissions: () => Promise<AccountPermissions>
   onConfirm: () => void
 }) {
   const [appMode, setAppMode] = useState<'app' | 'custom'>('app')
+
+  if (dialog.kind === 'global-permissions') {
+    return (
+      <GlobalPermissionsDialog
+        globalDefaults={globalDefaults}
+        onClose={onClose}
+        onSave={onSubmitGlobalPermissions}
+        onResetDefaults={onResetGlobalPermissions}
+      />
+    )
+  }
+
+  if (dialog.kind === 'permissions') {
+    return (
+      <PermissionsDialog
+        account={dialog.account}
+        globalDefaults={globalDefaults}
+        onClose={onClose}
+        onSave={onSubmitPermissions}
+      />
+    )
+  }
 
   if (dialog.kind === 'add' || dialog.kind === 'rename') {
     const rename = dialog.kind === 'rename'
@@ -798,6 +875,7 @@ function AccountContextMenu({
   onMute,
   onReload,
   onClearCache,
+  onPermissions,
   onRemove
 }: {
   account?: Account
@@ -807,6 +885,7 @@ function AccountContextMenu({
   onMute: (account: Account) => void
   onReload: (account: Account) => void
   onClearCache: (account: Account) => void
+  onPermissions: (account: Account) => void
   onRemove: (account: Account) => void
 }) {
   if (!account) return null
@@ -816,8 +895,390 @@ function AccountContextMenu({
       <button onClick={() => onMute(account)}>{account.muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{account.muted ? 'Unmute' : 'Mute'}</button>
       <button onClick={() => onReload(account)}><RefreshCw size={14} />Reload</button>
       <button onClick={() => onClearCache(account)}>Clear cache</button>
+      <button onClick={() => onPermissions(account)}><Shield size={14} />Permissions</button>
       <hr />
       <button className="danger" onClick={() => onRemove(account)}><Trash2 size={14} />Remove account</button>
+    </div>
+  )
+}
+
+function accountOrigin(account: Account): string {
+  try {
+    return new URL(account.url).origin
+  } catch {
+    return account.url
+  }
+}
+
+function PermissionsDialog({
+  account,
+  globalDefaults,
+  onClose,
+  onSave
+}: {
+  account: Account
+  globalDefaults: AccountPermissions
+  onClose: () => void
+  onSave: (permissions: AccountPermissions) => Promise<void>
+}) {
+  const [permissions, setPermissions] = useState<AccountPermissions>(() => ({
+    ...globalDefaults,
+    ...(account.permissions ?? {})
+  }))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const origin = accountOrigin(account)
+
+  const updateKey = (key: keyof AccountPermissions, value: PermissionState) => {
+    setPermissions((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const resetDefaults = () => {
+    setPermissions({ ...globalDefaults })
+  }
+
+  const handleSave = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      await onSave(permissions)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save permissions.')
+      setSaving(false)
+    }
+  }
+
+  const categories: Array<{
+    key: keyof AccountPermissions
+    label: string
+    description: string
+    icon: typeof Shield
+  }> = [
+    {
+      key: 'camera',
+      label: 'Camera',
+      description: 'Allow site to capture video from your camera',
+      icon: Camera
+    },
+    {
+      key: 'microphone',
+      label: 'Microphone',
+      description: 'Allow site to capture audio from your microphone',
+      icon: Mic
+    },
+    {
+      key: 'notifications',
+      label: 'Notifications',
+      description: 'Allow site to send desktop notifications',
+      icon: Bell
+    },
+    {
+      key: 'screenShare',
+      label: 'Screen Sharing',
+      description: 'Allow site to prompt to share windows or screens',
+      icon: Monitor
+    },
+    {
+      key: 'clipboard',
+      label: 'Clipboard Access',
+      description: 'Allow site to read from and write to system clipboard',
+      icon: Clipboard
+    },
+    {
+      key: 'geolocation',
+      label: 'Geolocation',
+      description: 'Allow site to access your physical location',
+      icon: MapPin
+    },
+    {
+      key: 'downloads',
+      label: 'Downloads',
+      description: 'Allow site to trigger automatic file downloads',
+      icon: Download
+    }
+  ]
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) onClose()
+      }}
+    >
+      <form
+        className="hub-dialog permissions-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="perm-title"
+        onSubmit={handleSave}
+      >
+        <header className="permissions-header">
+          <div className="permissions-title-wrap">
+            <span className="permissions-icon-badge">
+              <Shield size={18} />
+            </span>
+            <div>
+              <h2 id="perm-title">Permissions</h2>
+              <div className="permissions-subtitle">
+                <strong>{account.name}</strong> · <span className="permissions-origin">{origin}</span>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="permissions-reset-btn"
+            onClick={resetDefaults}
+            disabled={saving}
+            title="Reset all to defaults"
+          >
+            <RotateCcw size={12} />
+            <span>Reset to defaults</span>
+          </button>
+        </header>
+
+        <div className="permissions-os-note">
+          Operating system privacy settings take precedence. If Camera or Microphone is blocked in OS settings, Social HUB cannot grant access.
+        </div>
+
+        {error && <div className="permissions-error-banner" role="alert">{error}</div>}
+
+        <div className="permissions-list">
+          {categories.map((cat) => {
+            const Icon = cat.icon
+            const state = permissions[cat.key]
+            return (
+              <div key={cat.key} className="permission-row">
+                <div className="permission-info">
+                  <div className="permission-row-header">
+                    <Icon size={14} className="permission-cat-icon" />
+                    <span className="permission-label">{cat.label}</span>
+                  </div>
+                  <span className="permission-desc">{cat.description}</span>
+                </div>
+                <div className="permission-toggle-group" role="group" aria-label={`${cat.label} permission`}>
+                  <button
+                    type="button"
+                    className={`perm-btn allow ${state === 'allow' ? 'selected' : ''}`}
+                    aria-pressed={state === 'allow'}
+                    disabled={saving}
+                    onClick={() => updateKey(cat.key, 'allow')}
+                  >
+                    Allow
+                  </button>
+                  <button
+                    type="button"
+                    className={`perm-btn block ${state === 'block' ? 'selected' : ''}`}
+                    aria-pressed={state === 'block'}
+                    disabled={saving}
+                    onClick={() => updateKey(cat.key, 'block')}
+                  >
+                    Block
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="dialog-actions">
+          <button type="button" className="dialog-secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button type="submit" className="dialog-primary" disabled={saving}>
+            {saving ? 'Saving...' : 'Save permissions'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function GlobalPermissionsDialog({
+  globalDefaults,
+  onClose,
+  onSave,
+  onResetDefaults
+}: {
+  globalDefaults: AccountPermissions
+  onClose: () => void
+  onSave: (permissions: AccountPermissions) => Promise<void>
+  onResetDefaults: () => Promise<AccountPermissions>
+}) {
+  const [permissions, setPermissions] = useState<AccountPermissions>(() => ({
+    ...DEFAULT_ACCOUNT_PERMISSIONS,
+    ...globalDefaults
+  }))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const updateKey = (key: keyof AccountPermissions, value: PermissionState) => {
+    setPermissions((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const resetToFactory = async () => {
+    try {
+      const reset = await onResetDefaults()
+      setPermissions({ ...reset })
+    } catch {
+      setPermissions({ ...DEFAULT_ACCOUNT_PERMISSIONS })
+    }
+  }
+
+  const handleSave = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      await onSave(permissions)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save default permissions.')
+      setSaving(false)
+    }
+  }
+
+  const categories: Array<{
+    key: keyof AccountPermissions
+    label: string
+    description: string
+    icon: typeof ShieldCheck
+  }> = [
+    {
+      key: 'camera',
+      label: 'Camera',
+      description: 'Default camera access for new accounts',
+      icon: Camera
+    },
+    {
+      key: 'microphone',
+      label: 'Microphone',
+      description: 'Default microphone access for new accounts',
+      icon: Mic
+    },
+    {
+      key: 'notifications',
+      label: 'Notifications',
+      description: 'Default notification permission for new accounts',
+      icon: Bell
+    },
+    {
+      key: 'screenShare',
+      label: 'Screen Sharing',
+      description: 'Default screen sharing permission for new accounts',
+      icon: Monitor
+    },
+    {
+      key: 'clipboard',
+      label: 'Clipboard Access',
+      description: 'Default clipboard access for new accounts',
+      icon: Clipboard
+    },
+    {
+      key: 'geolocation',
+      label: 'Geolocation',
+      description: 'Default physical location permission for new accounts',
+      icon: MapPin
+    },
+    {
+      key: 'downloads',
+      label: 'Downloads',
+      description: 'Default file download permission for new accounts',
+      icon: Download
+    }
+  ]
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) onClose()
+      }}
+    >
+      <form
+        className="hub-dialog permissions-dialog global-permissions-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="global-perm-title"
+        onSubmit={handleSave}
+      >
+        <header className="permissions-header">
+          <div className="permissions-title-wrap">
+            <span className="permissions-icon-badge">
+              <ShieldCheck size={18} />
+            </span>
+            <div>
+              <h2 id="global-perm-title">Permissions</h2>
+              <div className="permissions-subtitle">
+                <strong>Default settings</strong> · <span className="permissions-origin">Applied to newly created accounts</span>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="permissions-reset-btn"
+            onClick={resetToFactory}
+            disabled={saving}
+            title="Reset to initial factory defaults"
+          >
+            <RotateCcw size={12} />
+            <span>Reset to defaults</span>
+          </button>
+        </header>
+
+        <div className="permissions-os-note">
+          These settings define default permissions for newly created accounts. Existing accounts keep their current settings, and individual account permissions can still be managed independently.
+        </div>
+
+        {error && <div className="permissions-error-banner" role="alert">{error}</div>}
+
+        <div className="permissions-list">
+          {categories.map((cat) => {
+            const Icon = cat.icon
+            const state = permissions[cat.key]
+            return (
+              <div key={cat.key} className="permission-row">
+                <div className="permission-info">
+                  <div className="permission-row-header">
+                    <Icon size={14} className="permission-cat-icon" />
+                    <span className="permission-label">{cat.label}</span>
+                  </div>
+                  <span className="permission-desc">{cat.description}</span>
+                </div>
+                <div className="permission-toggle-group" role="group" aria-label={`${cat.label} default permission`}>
+                  <button
+                    type="button"
+                    className={`perm-btn allow ${state === 'allow' ? 'selected' : ''}`}
+                    aria-pressed={state === 'allow'}
+                    disabled={saving}
+                    onClick={() => updateKey(cat.key, 'allow')}
+                  >
+                    Allow
+                  </button>
+                  <button
+                    type="button"
+                    className={`perm-btn block ${state === 'block' ? 'selected' : ''}`}
+                    aria-pressed={state === 'block'}
+                    disabled={saving}
+                    onClick={() => updateKey(cat.key, 'block')}
+                  >
+                    Block
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="dialog-actions">
+          <button type="button" className="dialog-secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button type="submit" className="dialog-primary" disabled={saving}>
+            {saving ? 'Saving...' : 'Save defaults'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }

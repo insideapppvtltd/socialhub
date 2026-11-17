@@ -40,7 +40,8 @@ if (!gotLock) {
     activeWorkspaceId: accountManager.activeWorkspaceId(),
     accounts: viewManager?.listAccounts() ?? [],
     activeAccountId: viewManager?.activeAccountId() ?? null,
-    preferences: accountManager.preferences()
+    preferences: accountManager.preferences(),
+    globalDefaultPermissions: accountManager.getGlobalDefaultPermissions()
   })
 
   const publishState = (): void => {
