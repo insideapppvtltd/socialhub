@@ -34,7 +34,14 @@ export class HubNotifications {
 
     const callTypeLabel = call.callType === 'video' ? 'Incoming Video Call' : 'Incoming Voice Call'
     const title = `${account.name} – ${callTypeLabel}`
-    const validCaller = call.callerName && !/wordmark/i.test(call.callerName) ? call.callerName.trim() : undefined
+    const rawCaller = call.callerName ? call.callerName.trim() : ''
+    const isGeneric =
+      !rawCaller ||
+      /wordmark/i.test(rawCaller) ||
+      /\b(voice and video|video and voice|calling is now available|is now available|end-to-end encrypted|whatsapp web|incoming call|incoming voice|incoming video|voice call|video call)\b/i.test(
+        rawCaller
+      )
+    const validCaller = isGeneric ? undefined : rawCaller
     const body = validCaller ? `${validCaller} is calling...` : 'Incoming call...'
     const iconPath = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'resources', 'icon.png')
 

@@ -47,13 +47,19 @@ function isHttpsUrl(raw: unknown): raw is string {
   }
 }
 
-const CALL_STATUS_REGEX = /^(incoming|voice|video|call|whatsapp|appel|vocal|vidéo|entrant|llamada|entrante|chamada|recebida|eingehend|sprachanruf|videoanruf|answer|accept|decline|reject|atender|responder|recusar|rechazar|ablehnen|annehmen|ringing|sonando|sonnerie|dismiss|ignore|wordmark|wa-wordmark|logo|icon|button)$/i
+const CALL_STATUS_REGEX =
+  /^(incoming|voice|video|audio|call|calls|calling|whatsapp|appel|vocal|vidéo|entrant|llamada|entrante|chamada|recebida|eingehend|sprachanruf|videoanruf|answer|accept|decline|reject|atender|responder|recusar|rechazar|ablehnen|annehmen|ringing|sonando|sonnerie|dismiss|ignore|wordmark|wa-wordmark|logo|icon|button|available|now)$/i
+
+const GENERIC_PHRASE_REGEX =
+  /\b(voice and video|video and voice|calling is now available|is now available|end-to-end encrypted|end-to-end encryption|download whatsapp|use whatsapp|make calls|send and receive|keep your phone|whatsapp web|incoming call|incoming voice|incoming video|voice call|video call|audio call|appel vocal|appel vidéo|llamada de voz|videollamada|anruf|wa-wordmark|wordmark)\b/i
 
 function sanitizeCallerName(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined
   const trimmed = raw.trim().slice(0, 100)
   if (!trimmed || /wordmark/i.test(trimmed)) return undefined
+  if (GENERIC_PHRASE_REGEX.test(trimmed)) return undefined
   if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(trimmed) || /^\d+$/.test(trimmed)) return undefined
+  if (CALL_STATUS_REGEX.test(trimmed)) return undefined
   const words = trimmed.toLowerCase().split(/\s+/)
   const isAllStatusWords = words.every((w) => {
     const cleanedWord = w.replace(/[^\p{L}\p{N}]/gu, '')
@@ -401,7 +407,12 @@ export function registerIpc(
           tag: callIdClean
         })
         broadcastNotifications()
-      } else if (callerName && (existingCall.title === fallbackTitle || /wordmark/i.test(existingCall.title))) {
+      } else if (
+        callerName &&
+        (existingCall.title === fallbackTitle ||
+          /wordmark/i.test(existingCall.title) ||
+          GENERIC_PHRASE_REGEX.test(existingCall.title))
+      ) {
         accounts.updateCallNotificationCaller(callIdClean, accountId, callerName)
         broadcastNotifications()
       }
