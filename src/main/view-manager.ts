@@ -17,7 +17,7 @@ import path from 'node:path'
 import { AccountManager } from './account-manager'
 import { HubNotifications } from './notifications'
 import { SIDEBAR_WIDTH } from '../shared/layout'
-import { APP_CATALOG } from '../shared/apps'
+import { APP_CATALOG, resolvePlatformName } from '../shared/apps'
 import type { Account, AccountPermissions, DownloadUpdate } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
@@ -648,6 +648,7 @@ export class ViewManager {
             accountId: account.id,
             accountName: account.name,
             accountAppId: account.appId,
+            platformName: resolvePlatformName(account.appId, account.url),
             type: 'download',
             title: state === 'completed' ? 'Download complete' : 'Download failed',
             body: filename

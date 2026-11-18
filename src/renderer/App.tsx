@@ -36,7 +36,7 @@ import {
 import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
 import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
-import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
+import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
 
 type AccountMenu = { id: string; x: number; y: number } | null
@@ -758,7 +758,7 @@ export default function App() {
                     <div className="notif-content">
                       <div className="notif-meta-row">
                         <span className="notif-origin">
-                          {notif.workspaceName} • {notif.accountName}
+                          {notif.workspaceName} • {notif.accountName} • {notif.platformName || resolvePlatformName(notif.accountAppId)}
                         </span>
                         <span className="notif-time">{formatRelativeTime(notif.timestamp)}</span>
                       </div>

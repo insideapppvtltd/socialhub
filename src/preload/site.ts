@@ -23,7 +23,69 @@ interface DetectedCall {
   declineButton?: HTMLElement
 }
 
-const CALL_STATUS_WORDS = /^(incoming|voice|video|call|whatsapp|appel|vocal|vidéo|entrant|llamada|entrante|chamada|recebida|eingehend|sprachanruf|videoanruf|answer|accept|decline|reject|atender|responder|recusar|rechazar|ablehnen|annehmen|ringing|sonando|sonnerie|dismiss|ignore)$/i
+const CALL_STATUS_REGEX = /^(incoming|voice|video|call|whatsapp|appel|vocal|vidéo|entrant|llamada|entrante|chamada|recebida|eingehend|sprachanruf|videoanruf|answer|accept|decline|reject|atender|responder|recusar|rechazar|ablehnen|annehmen|ringing|sonando|sonnerie|dismiss|ignore|wordmark|wa-wordmark|logo|icon|button)$/i
+
+function isValidCallerName(raw: string): boolean {
+  if (!raw) return false
+  const trimmed = raw.trim()
+  if (trimmed.length < 1 || trimmed.length > 100) return false
+  if (/wordmark/i.test(trimmed)) return false
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(trimmed)) return false
+  if (/^\d+$/.test(trimmed)) return false
+  const words = trimmed.toLowerCase().split(/\s+/)
+  const isAllStatusWords = words.every((w) => {
+    const cleanedWord = w.replace(/[^\p{L}\p{N}]/gu, '')
+    return !cleanedWord || CALL_STATUS_REGEX.test(cleanedWord)
+  })
+  if (isAllStatusWords) return false
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) return false
+  return true
+}
+
+function sanitizeCallerCandidate(el: HTMLElement): string | undefined {
+  if (el.closest('button, [role="button"], [data-icon], svg, [data-testid*="icon" i]')) {
+    return undefined
+  }
+  const text = (el.innerText || el.textContent || '').trim()
+  if (text && isValidCallerName(text)) {
+    return text
+  }
+  const titleAttr = (el.getAttribute('title') || '').trim()
+  if (titleAttr && isValidCallerName(titleAttr)) {
+    return titleAttr
+  }
+  return undefined
+}
+
+function extractCallerName(container: HTMLElement): string | undefined {
+  const highPriority = container.querySelectorAll<HTMLElement>(
+    '[data-testid*="caller" i], [data-testid*="contact-name" i], [data-testid*="call-title" i], [data-testid*="cell-frame-title" i], [role="heading"], h1, h2, h3'
+  )
+  for (const el of highPriority) {
+    const name = sanitizeCallerCandidate(el)
+    if (name) return name
+  }
+
+  const candidates = container.querySelectorAll<HTMLElement>(
+    'span[dir="auto"], div[dir="auto"], span[title]'
+  )
+  for (const el of candidates) {
+    const name = sanitizeCallerCandidate(el)
+    if (name) return name
+  }
+
+  if (document.title) {
+    const titleMatch =
+      document.title.match(/(?:call from|incoming call from)\s+([^()]+)/i) ||
+      document.title.match(/📞\s*([^(]+)/)
+    if (titleMatch && titleMatch[1]) {
+      const fromTitle = titleMatch[1].trim()
+      if (isValidCallerName(fromTitle)) return fromTitle
+    }
+  }
+
+  return undefined
+}
 
 const ACCEPT_SELECTOR = [
   '[data-testid*="accept" i]',
@@ -130,33 +192,7 @@ function findIncomingCallModal(): DetectedCall | null {
     const hasVideoText = /\b(video|vidéo|videollamada|vídeo|videoanruf)\b/i.test(textContent)
     const callType: 'voice' | 'video' = hasVideoIcon || hasVideoText ? 'video' : 'voice'
 
-    // Extract caller name from candidate elements
-    let callerName: string | undefined
-    const titleElements = foundContainer.querySelectorAll<HTMLElement>(
-      '[role="heading"], h1, h2, h3, [data-testid*="contact-name"], [data-testid*="caller"], span[title], span[dir="auto"], div[dir="auto"]'
-    )
-    for (const el of titleElements) {
-      const raw = (el.getAttribute('title') || el.innerText || el.textContent || '').trim()
-      if (!raw || raw.length > 100) continue
-      const cleaned = raw.replace(/[^\p{L}\p{N}\s+]/gu, '').trim()
-      if (cleaned && !CALL_STATUS_WORDS.test(cleaned) && !/^\d{1,2}:\d{2}$/.test(cleaned)) {
-        callerName = raw
-        break
-      }
-    }
-
-    // Fallback: extract caller name from document.title if WhatsApp set it there
-    if (!callerName && document.title) {
-      const titleMatch =
-        document.title.match(/(?:call from|incoming call from)\s+([^()]+)/i) ||
-        document.title.match(/📞\s*([^(]+)/)
-      if (titleMatch && titleMatch[1]) {
-        const fromTitle = titleMatch[1].trim()
-        if (fromTitle && fromTitle.length <= 100 && !CALL_STATUS_WORDS.test(fromTitle)) {
-          callerName = fromTitle
-        }
-      }
-    }
+    const callerName = extractCallerName(foundContainer)
 
     return {
       element: foundContainer,
@@ -187,7 +223,7 @@ function initWhatsAppCallDetector(): void {
 
   console.log(`[CALL][PRELOAD] Initializing call detector on ${window.location.href}`)
 
-  let activeCall: { callId: string; element: HTMLElement } | null = null
+  let activeCall: { callId: string; element: HTMLElement; callerName?: string } | null = null
   let checkScheduled = false
 
   const checkCallState = () => {
@@ -196,7 +232,7 @@ function initWhatsAppCallDetector(): void {
 
     if (detected && !activeCall) {
       const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
-      activeCall = { callId, element: detected.element }
+      activeCall = { callId, element: detected.element, callerName: detected.callerName }
 
       console.log(
         `[CALL][PRELOAD] Detected incoming call at ${new Date().toISOString()} | callId: ${callId} | type: ${detected.callType} | caller: ${detected.callerName ?? 'Unknown'}`
@@ -218,6 +254,15 @@ function initWhatsAppCallDetector(): void {
         callerName: detected.callerName,
         callType: detected.callType
       })
+    } else if (detected && activeCall) {
+      if (!activeCall.callerName && detected.callerName) {
+        activeCall.callerName = detected.callerName
+        console.log(`[CALL][PRELOAD] Caller name resolved after call start: ${detected.callerName}`)
+        ipcRenderer.send('hub:incoming-call-update', {
+          callId: activeCall.callId,
+          callerName: detected.callerName
+        })
+      }
     } else if (!detected && activeCall) {
       console.log(`[CALL][PRELOAD] Incoming call modal dismissed for callId: ${activeCall.callId}`)
       ipcRenderer.send('hub:incoming-call-end', { callId: activeCall.callId })

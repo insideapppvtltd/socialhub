@@ -1,6 +1,6 @@
 import Store from 'electron-store'
 import { randomUUID } from 'node:crypto'
-import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
+import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import type { Account, AccountPermissions, HubNotificationItem, Preferences, WindowBounds, Workspace } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
@@ -494,6 +494,7 @@ export class AccountManager {
       accountId: item.accountId,
       accountName: item.accountName,
       accountAppId: item.accountAppId,
+      platformName: item.platformName ?? resolvePlatformName(item.accountAppId),
       type: item.type,
       title: item.title.trim().slice(0, 100),
       body: (item.body || '').trim().slice(0, 300),
@@ -507,6 +508,28 @@ export class AccountManager {
     const updated = pruneNotifications([newItem, ...current])
     store.set('notifications', updated)
     return newItem
+  }
+
+  updateNotificationTitle(id: string, title: string): void {
+    const current = this.getNotifications()
+    const updated = current.map((n) => (n.id === id ? { ...n, title: title.trim().slice(0, 100) } : n))
+    store.set('notifications', updated)
+  }
+
+  updateCallNotificationCaller(callId: string, accountId: string, callerName: string): boolean {
+    const current = this.getNotifications()
+    let found = false
+    const updated = current.map((n) => {
+      if (n.type === 'call' && n.tag === callId && n.accountId === accountId) {
+        found = true
+        return { ...n, title: callerName.trim().slice(0, 100) }
+      }
+      return n
+    })
+    if (found) {
+      store.set('notifications', updated)
+    }
+    return found
   }
 
   markNotificationRead(id: string): void {

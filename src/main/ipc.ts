@@ -4,7 +4,7 @@ import type { HubNotifications } from './notifications'
 import type { ViewManager } from './view-manager'
 import type { AccountPermissions, HubState, Preferences } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
-import { CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
+import { CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import { getGoogleIdToken } from './google-oauth'
 
 const accountIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -45,6 +45,22 @@ function isHttpsUrl(raw: unknown): raw is string {
   } catch {
     return false
   }
+}
+
+const CALL_STATUS_REGEX = /^(incoming|voice|video|call|whatsapp|appel|vocal|vidéo|entrant|llamada|entrante|chamada|recebida|eingehend|sprachanruf|videoanruf|answer|accept|decline|reject|atender|responder|recusar|rechazar|ablehnen|annehmen|ringing|sonando|sonnerie|dismiss|ignore|wordmark|wa-wordmark|logo|icon|button)$/i
+
+function sanitizeCallerName(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim().slice(0, 100)
+  if (!trimmed || /wordmark/i.test(trimmed)) return undefined
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(trimmed) || /^\d+$/.test(trimmed)) return undefined
+  const words = trimmed.toLowerCase().split(/\s+/)
+  const isAllStatusWords = words.every((w) => {
+    const cleanedWord = w.replace(/[^\p{L}\p{N}]/gu, '')
+    return !cleanedWord || CALL_STATUS_REGEX.test(cleanedWord)
+  })
+  if (isAllStatusWords) return undefined
+  return trimmed
 }
 
 export function registerIpc(
@@ -297,6 +313,7 @@ export function registerIpc(
 
     const workspace = accounts.getWorkspace(account.workspaceId)
     const workspaceName = workspace?.name ?? 'Workspace'
+    const platformName = resolvePlatformName(account.appId, account.url)
 
     const recent = accounts.getNotifications()
     const isDuplicate = recent.slice(0, 10).some(
@@ -315,6 +332,7 @@ export function registerIpc(
       accountId: account.id,
       accountName: account.name,
       accountAppId: account.appId,
+      platformName,
       type: 'chat',
       title,
       body,
@@ -345,9 +363,7 @@ export function registerIpc(
       return
     }
     const callType: 'voice' | 'video' = candidate.callType === 'video' ? 'video' : 'voice'
-    const callerName = typeof candidate.callerName === 'string' && candidate.callerName.trim()
-      ? candidate.callerName.trim().slice(0, 100)
-      : undefined
+    const callerName = sanitizeCallerName(candidate.callerName)
 
     console.log(`[CALL][IPC] Received hub:incoming-call-start for account: ${accountId} | callId: ${candidate.callId} | type: ${callType}`)
 
@@ -357,14 +373,19 @@ export function registerIpc(
       return
     }
 
+    const platformName = resolvePlatformName(account.appId, account.url)
+    const isWhatsApp = account.appId === 'whatsapp' || /whatsapp/i.test(platformName) || /whatsapp\.com/i.test(account.url)
+    const fallbackTitle = isWhatsApp ? 'Incoming WhatsApp Call' : (platformName && platformName !== 'Web' && platformName !== 'Web App' ? `Incoming ${platformName} Call` : 'Incoming Call')
+    const callTitle = callerName || fallbackTitle
+
     const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
     if (perms.notifications === 'allow') {
       const callIdClean = candidate.callId.trim()
       const existingCalls = accounts.getNotifications()
-      const alreadyRecorded = existingCalls.some(
+      const existingCall = existingCalls.find(
         (n) => n.type === 'call' && n.tag === callIdClean && n.accountId === accountId
       )
-      if (!alreadyRecorded) {
+      if (!existingCall) {
         const workspace = accounts.getWorkspace(account.workspaceId)
         accounts.addNotification({
           workspaceId: account.workspaceId,
@@ -372,12 +393,16 @@ export function registerIpc(
           accountId: account.id,
           accountName: account.name,
           accountAppId: account.appId,
+          platformName,
           type: 'call',
-          title: callerName ?? account.name,
+          title: callTitle,
           body: callType === 'video' ? 'Incoming Video Call' : 'Incoming Voice Call',
           callType,
           tag: callIdClean
         })
+        broadcastNotifications()
+      } else if (callerName && (existingCall.title === fallbackTitle || /wordmark/i.test(existingCall.title))) {
+        accounts.updateCallNotificationCaller(callIdClean, accountId, callerName)
         broadcastNotifications()
       }
     }
@@ -427,5 +452,34 @@ export function registerIpc(
 
     console.log(`[CALL][IPC] Received hub:incoming-call-end for account: ${accountId} | callId: ${callId}`)
     notifications.dismissIncomingCall(accountId, callId)
+  })
+  ipcMain.on('hub:incoming-call-update', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame || senderFrame !== event.sender.mainFrame) {
+      console.warn('[CALL][IPC] Rejected incoming-call-update: sender frame is not the main frame')
+      return
+    }
+    const accountId = views.accountForWebContents(event.sender)
+    const frameUrl = senderFrame.url ?? ''
+    if (!accountId || !views.isAccountOrigin(accountId, frameUrl)) {
+      console.warn(`[CALL][IPC] Rejected incoming-call-update: untrusted frame or unknown account (origin: "${frameUrl}", accountId: ${accountId})`)
+      return
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return
+    }
+    const candidate = payload as Record<string, unknown>
+    if (typeof candidate.callId !== 'string' || !candidate.callId.trim() || candidate.callId.length > 100) {
+      return
+    }
+    const callIdClean = candidate.callId.trim()
+    const validCaller = sanitizeCallerName(candidate.callerName)
+    if (validCaller) {
+      console.log(`[CALL][IPC] Updating caller name for callId: ${callIdClean} to: ${validCaller}`)
+      const updated = accounts.updateCallNotificationCaller(callIdClean, accountId, validCaller)
+      if (updated) {
+        broadcastNotifications()
+      }
+    }
   })
 }

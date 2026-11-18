@@ -34,7 +34,8 @@ export class HubNotifications {
 
     const callTypeLabel = call.callType === 'video' ? 'Incoming Video Call' : 'Incoming Voice Call'
     const title = `${account.name} – ${callTypeLabel}`
-    const body = call.callerName ? `${call.callerName} is calling...` : 'Incoming call...'
+    const validCaller = call.callerName && !/wordmark/i.test(call.callerName) ? call.callerName.trim() : undefined
+    const body = validCaller ? `${validCaller} is calling...` : 'Incoming call...'
     const iconPath = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'resources', 'icon.png')
 
     const notification = new Notification({

@@ -74,3 +74,35 @@ export function getCatalogApp(id: string) {
 export function isCatalogAppId(id: string): id is CatalogAppId {
   return APP_CATALOG.some((app) => app.id === id)
 }
+
+export function resolvePlatformName(appId?: string, url?: string): string {
+  if (appId && appId !== CUSTOM_APP_ID) {
+    const catalogApp = getCatalogApp(appId)
+    if (catalogApp) return catalogApp.name
+  }
+  if (url) {
+    try {
+      const parsed = new URL(url)
+      const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '')
+      for (const app of APP_CATALOG) {
+        try {
+          const appHost = new URL(app.url).hostname.toLowerCase().replace(/^www\./, '')
+          const baseAppHost = appHost.replace(/^(web|app|mail|teams|chat|mobile)\./, '')
+          if (
+            hostname === appHost ||
+            hostname.endsWith(`.${appHost}`) ||
+            (baseAppHost && (hostname === baseAppHost || hostname.endsWith(`.${baseAppHost}`)))
+          ) {
+            return app.name
+          }
+        } catch {}
+      }
+      const parts = hostname.split('.')
+      const namePart = parts.length >= 2 ? parts[parts.length - 2] : parts[0]
+      if (namePart) {
+        return namePart.charAt(0).toUpperCase() + namePart.slice(1)
+      }
+    } catch {}
+  }
+  return 'Web'
+}

@@ -93,6 +93,7 @@ export interface HubNotificationItem {
   accountId: string
   accountName: string
   accountAppId?: string
+  platformName?: string
   type: NotificationType
   title: string
   body: string
