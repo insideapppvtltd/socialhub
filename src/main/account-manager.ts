@@ -1,7 +1,7 @@
 import Store from 'electron-store'
 import { randomUUID } from 'node:crypto'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
-import type { Account, AccountPermissions, Preferences, WindowBounds, Workspace } from './types'
+import type { Account, AccountPermissions, HubNotificationItem, Preferences, WindowBounds, Workspace } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
 export type StoredAccount = Omit<Account, 'unread'>
@@ -33,6 +33,46 @@ export function sanitizePermissions(raw?: Partial<AccountPermissions> | null): A
   return result
 }
 
+export const MAX_NOTIFICATIONS = 100
+export const MAX_NOTIFICATION_AGE_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
+
+export function pruneNotifications(items: HubNotificationItem[]): HubNotificationItem[] {
+  const cutoff = Date.now() - MAX_NOTIFICATION_AGE_MS
+  const valid = items.filter(
+    (n) =>
+      n &&
+      typeof n === 'object' &&
+      typeof n.id === 'string' &&
+      typeof n.timestamp === 'number' &&
+      n.timestamp >= cutoff
+  )
+
+  if (valid.length <= MAX_NOTIFICATIONS) {
+    return valid.sort((a, b) => b.timestamp - a.timestamp)
+  }
+
+  // Preferentially retain unread notifications
+  const unread = valid.filter((n) => !n.read)
+  const read = valid.filter((n) => n.read)
+
+  // Sort oldest first
+  read.sort((a, b) => a.timestamp - b.timestamp)
+  unread.sort((a, b) => a.timestamp - b.timestamp)
+
+  const excess = valid.length - MAX_NOTIFICATIONS
+  let kept: HubNotificationItem[]
+  if (read.length >= excess) {
+    const keepRead = read.slice(excess)
+    kept = [...keepRead, ...unread]
+  } else {
+    const remainingToDrop = excess - read.length
+    const keepUnread = unread.slice(remainingToDrop)
+    kept = keepUnread
+  }
+
+  return kept.sort((a, b) => b.timestamp - a.timestamp)
+}
+
 interface StoreData {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
@@ -41,6 +81,7 @@ interface StoreData {
   preferences: Preferences
   windowBounds: WindowBounds
   globalDefaultPermissions: AccountPermissions
+  notifications: HubNotificationItem[]
 }
 
 const colors = ['#25a66a', '#4a82d8', '#a16bd3', '#e08a35', '#d75d72', '#248e9a']
@@ -65,7 +106,8 @@ const store = new Store<StoreData>({
       theme: 'system'
     },
     windowBounds: { width: 1180, height: 780 },
-    globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
+    globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS,
+    notifications: []
   }
 })
 
@@ -167,6 +209,16 @@ export class AccountManager {
         store.set('preferences', updatedPrefs as Preferences)
       }
     }
+
+    const rawNotifications = store.get('notifications') as HubNotificationItem[] | undefined
+    if (!rawNotifications || !Array.isArray(rawNotifications)) {
+      store.set('notifications', [])
+    } else {
+      const pruned = pruneNotifications(rawNotifications)
+      if (pruned.length !== rawNotifications.length) {
+        store.set('notifications', pruned)
+      }
+    }
   }
 
   // --- Workspaces CRUD ---
@@ -251,6 +303,7 @@ export class AccountManager {
       'workspaces',
       this.listWorkspaces().filter((w) => w.id !== id)
     )
+    this.removeNotificationsForWorkspace(id)
   }
 
   activeWorkspaceId(): string {
@@ -416,6 +469,78 @@ export class AccountManager {
       const nextInSameWorkspace = remaining.find((a) => a.workspaceId === target.workspaceId)
       store.set('activeAccountId', nextInSameWorkspace?.id ?? null)
     }
+    this.removeNotificationsForAccount(id)
+  }
+
+  // --- Notifications Center ---
+
+  getNotifications(): HubNotificationItem[] {
+    const raw = store.get('notifications')
+    if (!Array.isArray(raw)) return []
+    return pruneNotifications(raw)
+  }
+
+  addNotification(
+    item: Omit<HubNotificationItem, 'id' | 'timestamp' | 'read'> & {
+      id?: string
+      timestamp?: number
+      read?: boolean
+    }
+  ): HubNotificationItem {
+    const newItem: HubNotificationItem = {
+      id: item.id || randomUUID(),
+      workspaceId: item.workspaceId,
+      workspaceName: item.workspaceName,
+      accountId: item.accountId,
+      accountName: item.accountName,
+      accountAppId: item.accountAppId,
+      type: item.type,
+      title: item.title.trim().slice(0, 100),
+      body: (item.body || '').trim().slice(0, 300),
+      timestamp: item.timestamp ?? Date.now(),
+      read: item.read ?? false,
+      tag: item.tag ? item.tag.trim().slice(0, 100) : undefined,
+      callType: item.callType
+    }
+
+    const current = this.getNotifications()
+    const updated = pruneNotifications([newItem, ...current])
+    store.set('notifications', updated)
+    return newItem
+  }
+
+  markNotificationRead(id: string): void {
+    const current = this.getNotifications()
+    const updated = current.map((n) => (n.id === id ? { ...n, read: true } : n))
+    store.set('notifications', updated)
+  }
+
+  markAllNotificationsRead(): void {
+    const current = this.getNotifications()
+    const updated = current.map((n) => ({ ...n, read: true }))
+    store.set('notifications', updated)
+  }
+
+  removeNotification(id: string): void {
+    const current = this.getNotifications()
+    const updated = current.filter((n) => n.id !== id)
+    store.set('notifications', updated)
+  }
+
+  clearNotifications(): void {
+    store.set('notifications', [])
+  }
+
+  removeNotificationsForAccount(accountId: string): void {
+    const current = this.getNotifications()
+    const updated = current.filter((n) => n.accountId !== accountId)
+    store.set('notifications', updated)
+  }
+
+  removeNotificationsForWorkspace(workspaceId: string): void {
+    const current = this.getNotifications()
+    const updated = current.filter((n) => n.workspaceId !== workspaceId)
+    store.set('notifications', updated)
   }
 
   setActive(id: string): void {

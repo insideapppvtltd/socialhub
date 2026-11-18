@@ -1,7 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('socialHubNotification', {
-  clicked: () => ipcRenderer.send('social:notification-click')
+  clicked: () => ipcRenderer.send('social:notification-click'),
+  notify: (data: { title: string; body?: string; tag?: string; icon?: string }) => {
+    if (!data || typeof data !== 'object') return
+    ipcRenderer.send('social:chat-notification', {
+      title: typeof data.title === 'string' ? data.title : '',
+      body: typeof data.body === 'string' ? data.body : '',
+      tag: typeof data.tag === 'string' ? data.tag : undefined,
+      icon: typeof data.icon === 'string' ? data.icon : undefined
+    })
+  }
 })
 
 // --- Incoming WhatsApp Call Detector ---

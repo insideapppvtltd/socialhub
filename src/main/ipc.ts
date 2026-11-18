@@ -58,6 +58,11 @@ export function registerIpc(
   googleOAuthClientId: string
 ): void {
   const guard = (event: IpcMainInvokeEvent) => assertSidebar(event, window, devUrl)
+  const broadcastNotifications = (): void => {
+    if (!window.isDestroyed()) {
+      window.webContents.send('hub:notifications', accounts.getNotifications())
+    }
+  }
   ipcMain.handle('hub:google-auth-token', async (event) => {
     guard(event)
     return getGoogleIdToken(googleOAuthClientId)
@@ -120,6 +125,7 @@ export function registerIpc(
     accounts.deleteWorkspace(id)
     views.switchWorkspace(accounts.activeWorkspaceId())
     window.webContents.send('hub:state', getState())
+    broadcastNotifications()
   })
   ipcMain.handle('hub:activate-workspace', (event, id: unknown) => {
     guard(event)
@@ -189,6 +195,7 @@ export function registerIpc(
     guard(event)
     assertAccountId(id)
     await views.removeAccount(id)
+    broadcastNotifications()
   })
   ipcMain.handle('hub:update-preferences', (event, value: unknown) => {
     guard(event)
@@ -212,6 +219,36 @@ export function registerIpc(
     onPreferencesChanged(preferences)
     return preferences
   })
+  ipcMain.handle('hub:get-notifications', (event) => {
+    guard(event)
+    return accounts.getNotifications()
+  })
+  ipcMain.handle('hub:mark-notification-read', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim() || id.length > 100) {
+      throw new Error('Invalid notification id.')
+    }
+    accounts.markNotificationRead(id)
+    broadcastNotifications()
+  })
+  ipcMain.handle('hub:mark-all-notifications-read', (event) => {
+    guard(event)
+    accounts.markAllNotificationsRead()
+    broadcastNotifications()
+  })
+  ipcMain.handle('hub:remove-notification', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim() || id.length > 100) {
+      throw new Error('Invalid notification id.')
+    }
+    accounts.removeNotification(id)
+    broadcastNotifications()
+  })
+  ipcMain.handle('hub:clear-notifications', (event) => {
+    guard(event)
+    accounts.clearNotifications()
+    broadcastNotifications()
+  })
   ipcMain.on('hub:set-sidebar-overlay', (event, active: unknown) => {
     if (event.sender !== window.webContents) {
       console.warn('Rejected sidebar-overlay IPC from an untrusted sender.')
@@ -230,6 +267,61 @@ export function registerIpc(
       return
     }
     notifications.focusAccount(accountId)
+  })
+  ipcMain.on('social:chat-notification', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame || senderFrame !== event.sender.mainFrame) {
+      console.warn('Rejected chat-notification IPC: sender frame is not the main frame.')
+      return
+    }
+    const accountId = views.accountForWebContents(event.sender)
+    const frameUrl = senderFrame.url ?? ''
+    if (!accountId || !views.isAccountOrigin(accountId, frameUrl)) {
+      console.warn('Rejected chat-notification IPC: untrusted frame or unknown account.')
+      return
+    }
+    const account = accounts.get(accountId)
+    if (!account) return
+
+    const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+    if (perms.notifications !== 'allow') {
+      return
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return
+    const candidate = payload as Record<string, unknown>
+    const title = typeof candidate.title === 'string' ? candidate.title.trim().slice(0, 100) : ''
+    if (!title) return
+    const body = typeof candidate.body === 'string' ? candidate.body.trim().slice(0, 300) : ''
+    const tag = typeof candidate.tag === 'string' ? candidate.tag.trim().slice(0, 100) : undefined
+
+    const workspace = accounts.getWorkspace(account.workspaceId)
+    const workspaceName = workspace?.name ?? 'Workspace'
+
+    const recent = accounts.getNotifications()
+    const isDuplicate = recent.slice(0, 10).some(
+      (n) =>
+        n.accountId === accountId &&
+        n.type === 'chat' &&
+        n.title === title &&
+        n.body === body &&
+        Math.abs(Date.now() - n.timestamp) < 2000
+    )
+    if (isDuplicate) return
+
+    accounts.addNotification({
+      workspaceId: account.workspaceId,
+      workspaceName,
+      accountId: account.id,
+      accountName: account.name,
+      accountAppId: account.appId,
+      type: 'chat',
+      title,
+      body,
+      tag
+    })
+
+    broadcastNotifications()
   })
   ipcMain.on('hub:incoming-call-start', (event, payload: unknown) => {
     const senderFrame = event.senderFrame
@@ -265,9 +357,33 @@ export function registerIpc(
       return
     }
 
+    const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+    if (perms.notifications === 'allow') {
+      const callIdClean = candidate.callId.trim()
+      const existingCalls = accounts.getNotifications()
+      const alreadyRecorded = existingCalls.some(
+        (n) => n.type === 'call' && n.tag === callIdClean && n.accountId === accountId
+      )
+      if (!alreadyRecorded) {
+        const workspace = accounts.getWorkspace(account.workspaceId)
+        accounts.addNotification({
+          workspaceId: account.workspaceId,
+          workspaceName: workspace?.name ?? 'Workspace',
+          accountId: account.id,
+          accountName: account.name,
+          accountAppId: account.appId,
+          type: 'call',
+          title: callerName ?? account.name,
+          body: callType === 'video' ? 'Incoming Video Call' : 'Incoming Voice Call',
+          callType,
+          tag: callIdClean
+        })
+        broadcastNotifications()
+      }
+    }
+
     const eligible = views.areNotificationsEnabled(accountId)
     if (!eligible) {
-      const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
       const reason = account.muted
         ? 'Account is muted'
         : accounts.preferences().doNotDisturb

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import hubLogo from '../assets/icon_wh_small.png'
 import {
   Bell,
   BellOff,
   Camera,
   Check,
+  CheckCheck,
   ChevronDown,
   CircleHelp,
   Clipboard,
@@ -13,10 +14,12 @@ import {
   LogIn,
   LogOut,
   MapPin,
+  MessageSquare,
   Mic,
   Monitor,
   Moon,
   Pencil,
+  PhoneCall,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -25,11 +28,13 @@ import {
   ShieldCheck,
   Sun,
   Trash2,
+  Video,
   Volume2,
-  VolumeX
+  VolumeX,
+  X
 } from 'lucide-react'
 import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
-import type { Account, AccountPermissions, DownloadUpdate, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
+import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
@@ -65,8 +70,23 @@ function getInitials(name: string): string {
     .join('')
 }
 
+function formatRelativeTime(timestamp: number): string {
+  const diffSec = Math.floor((Date.now() - timestamp) / 1000)
+  if (diffSec < 60) return 'Just now'
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `${diffHour}h ago`
+  const diffDay = Math.floor(diffHour / 24)
+  if (diffDay === 1) return 'Yesterday'
+  if (diffDay < 14) return `${diffDay}d ago`
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export default function App() {
   const [state, setState] = useState(initialState)
+  const [notifications, setNotifications] = useState<HubNotificationItem[]>([])
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [menu, setMenu] = useState<AccountMenu>(null)
   const [dialog, setDialog] = useState<EditorDialog>(null)
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
@@ -155,7 +175,15 @@ export default function App() {
     }).catch((error: unknown) => {
       showToast(error instanceof Error ? error.message : 'Could not load accounts.')
     })
+    void window.socialHub.getNotifications().then((items) => {
+      if (active) setNotifications(items)
+    }).catch((error: unknown) => {
+      console.error('Could not load notifications:', error)
+    })
     const offState = window.socialHub.onState(setState)
+    const offNotifications = window.socialHub.onNotifications((items) => {
+      if (active) setNotifications(items)
+    })
     const offDownload = window.socialHub.onDownload(setDownload)
     const offShortcut = window.socialHub.onAddAccountShortcut(() => void addAccount())
     const closeMenusOutside = (event: PointerEvent) => {
@@ -164,11 +192,13 @@ export default function App() {
       if (!target.closest('.tray-setting')) setTrayMenuOpen(false)
       if (!target.closest('.context-menu, .account-row')) setMenu(null)
       if (!target.closest('.workspace-dropdown-container')) setWorkspaceMenuOpen(false)
+      if (!target.closest('.notifications-panel, .notifications-nav-btn')) setNotificationsOpen(false)
     }
     document.addEventListener('pointerdown', closeMenusOutside)
     return () => {
       active = false
       offState()
+      offNotifications()
       offDownload()
       offShortcut()
       document.removeEventListener('pointerdown', closeMenusOutside)
@@ -200,9 +230,9 @@ export default function App() {
   }, [showToast])
 
   useEffect(() => {
-    window.socialHub.setSidebarOverlay(Boolean(dialog || menu || workspaceMenuOpen))
+    window.socialHub.setSidebarOverlay(Boolean(dialog || menu || workspaceMenuOpen || notificationsOpen))
     return () => window.socialHub.setSidebarOverlay(false)
-  }, [dialog, menu, workspaceMenuOpen])
+  }, [dialog, menu, workspaceMenuOpen, notificationsOpen])
 
   const activeWorkspace =
     state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
@@ -210,6 +240,59 @@ export default function App() {
   const workspaceAccounts = state.accounts.filter(
     (account) => account.workspaceId === currentWorkspaceId
   )
+
+  const unreadNotificationsCount = useMemo(
+    () => notifications.filter((n) => !n.read).length,
+    [notifications]
+  )
+
+  const handleNotificationClick = async (notif: HubNotificationItem) => {
+    try {
+      if (!notif.read) {
+        await window.socialHub.markNotificationRead(notif.id)
+      }
+      setNotificationsOpen(false)
+      const targetAccount = state.accounts.find((a) => a.id === notif.accountId)
+      if (!targetAccount) {
+        showToast('Account no longer exists.')
+        return
+      }
+      if (notif.workspaceId && notif.workspaceId !== state.activeWorkspaceId) {
+        const targetWorkspace = state.workspaces.find((w) => w.id === notif.workspaceId)
+        if (targetWorkspace) {
+          await window.socialHub.activateWorkspace(targetWorkspace.id)
+        }
+      }
+      await window.socialHub.activateAccount(targetAccount.id)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not activate account.')
+    }
+  }
+
+  const handleDismissNotification = async (event: MouseEvent, id: string) => {
+    event.stopPropagation()
+    try {
+      await window.socialHub.removeNotification(id)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not dismiss notification.')
+    }
+  }
+
+  const handleMarkAllRead = async () => {
+    try {
+      await window.socialHub.markAllNotificationsRead()
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not mark all notifications as read.')
+    }
+  }
+
+  const handleClearAllNotifications = async () => {
+    try {
+      await window.socialHub.clearNotifications()
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not clear notifications.')
+    }
+  }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -460,6 +543,22 @@ export default function App() {
             <span className={`switch ${state.preferences.doNotDisturb ? 'on' : ''}`} />
           </button>
           <button
+            className={`sidebar-nav-item notifications-nav-btn ${notificationsOpen ? 'active' : ''}`}
+            onClick={() => setNotificationsOpen((open) => !open)}
+            aria-haspopup="dialog"
+            aria-expanded={notificationsOpen}
+          >
+            <span className="nav-item-left">
+              <Bell size={15} />
+              <span>Notifications</span>
+            </span>
+            {unreadNotificationsCount > 0 && (
+              <span className="nav-item-badge notifications-unread-badge">
+                {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
+              </span>
+            )}
+          </button>
+          <button
             className="sidebar-nav-item permissions-nav-btn"
             onClick={() => setDialog({ kind: 'global-permissions' })}
           >
@@ -572,6 +671,118 @@ export default function App() {
           </div>
         </footer>
       </aside>
+
+      {notificationsOpen && (
+        <div className="notifications-panel" role="region" aria-label="Notifications Center">
+          <div className="notifications-header">
+            <div className="notifications-title-wrap">
+              <h3 className="notifications-title">Notifications</h3>
+              {unreadNotificationsCount > 0 && (
+                <span className="notifications-count-pill">
+                  {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount} unread
+                </span>
+              )}
+            </div>
+            <div className="notifications-actions">
+              {notifications.length > 0 && (
+                <>
+                  {unreadNotificationsCount > 0 && (
+                    <button
+                      className="notif-action-btn"
+                      onClick={() => void handleMarkAllRead()}
+                      title="Mark all as read"
+                      aria-label="Mark all as read"
+                    >
+                      <CheckCheck size={14} />
+                    </button>
+                  )}
+                  <button
+                    className="notif-action-btn danger"
+                    onClick={() => void handleClearAllNotifications()}
+                    title="Clear all notifications"
+                    aria-label="Clear all notifications"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
+              <button
+                className="notif-action-btn"
+                onClick={() => setNotificationsOpen(false)}
+                title="Close panel"
+                aria-label="Close"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+
+          <div className="notifications-list" role="list">
+            {notifications.length === 0 ? (
+              <div className="notifications-empty">
+                <div className="notifications-empty-icon">
+                  <Bell size={20} />
+                </div>
+                <h4>No notifications</h4>
+                <p>Incoming messages, calls, and downloads will appear here.</p>
+              </div>
+            ) : (
+              notifications.map((notif) => {
+                let TypeIcon = MessageSquare
+                let iconClass = 'chat'
+                if (notif.type === 'call') {
+                  TypeIcon = notif.callType === 'video' ? Video : PhoneCall
+                  iconClass = 'call'
+                } else if (notif.type === 'download') {
+                  TypeIcon = Download
+                  iconClass = 'download'
+                }
+
+                return (
+                  <div
+                    key={notif.id}
+                    className={`notification-item ${notif.read ? 'read' : 'unread'}`}
+                    role="listitem"
+                    tabIndex={0}
+                    onClick={() => void handleNotificationClick(notif)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        void handleNotificationClick(notif)
+                      }
+                    }}
+                  >
+                    <div className={`notif-type-icon ${iconClass}`}>
+                      <TypeIcon size={14} />
+                    </div>
+                    <div className="notif-content">
+                      <div className="notif-meta-row">
+                        <span className="notif-origin">
+                          {notif.workspaceName} • {notif.accountName}
+                        </span>
+                        <span className="notif-time">{formatRelativeTime(notif.timestamp)}</span>
+                      </div>
+                      <strong className="notif-title">{notif.title}</strong>
+                      {notif.body && <span className="notif-body">{notif.body}</span>}
+                    </div>
+                    <div className="notif-item-actions">
+                      {!notif.read && <span className="notif-unread-dot" title="Unread" />}
+                      <button
+                        className="notif-dismiss-btn"
+                        title="Dismiss notification"
+                        aria-label="Dismiss notification"
+                        onClick={(e) => void handleDismissNotification(e, notif.id)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
+      )}
 
       {menu && (
         <AccountContextMenu

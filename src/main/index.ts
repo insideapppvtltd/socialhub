@@ -57,6 +57,10 @@ if (!gotLock) {
     if (window && !window.isDestroyed()) window.webContents.send('hub:download', update)
   }
 
+  const publishNotifications = (): void => {
+    if (window && !window.isDestroyed()) window.webContents.send('hub:notifications', accountManager.getNotifications())
+  }
+
   function createWindow(): BrowserWindow {
     const saved = accountManager.bounds()
     const created = new BrowserWindow({
@@ -137,7 +141,7 @@ if (!gotLock) {
       }
     )
     const mainWindow = window
-    viewManager = new ViewManager(mainWindow, accountManager, notifications, publishState, publishDownload)
+    viewManager = new ViewManager(mainWindow, accountManager, notifications, publishState, publishDownload, publishNotifications)
     await viewManager.initialize()
     const [contentWidth, contentHeight] = mainWindow.getContentSize()
     viewManager.resizeToContent(contentWidth, contentHeight)
@@ -161,6 +165,7 @@ if (!gotLock) {
       process.env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? ''
     )
     publishState()
+    publishNotifications()
     loadRenderer(mainWindow)
     if (app.isPackaged) {
       autoUpdater.on('error', (error) => console.error('Auto-update error:', error))

@@ -71,7 +71,8 @@ export class ViewManager {
     private readonly accounts: AccountManager,
     private readonly notifications: HubNotifications,
     private readonly onStateChanged: () => void,
-    private readonly onDownload: (update: DownloadUpdate) => void
+    private readonly onDownload: (update: DownloadUpdate) => void,
+    private readonly onNotificationsChanged?: () => void
   ) {}
 
   async initialize(): Promise<void> {
@@ -598,6 +599,14 @@ export class ViewManager {
           class HubNotification extends NativeNotification {
             constructor(title, options) {
               super(\`[\${window.__socialHubAccountName}] \${title}\`, options);
+              try {
+                window.socialHubNotification?.notify({
+                  title: String(title || ''),
+                  body: options && typeof options.body === 'string' ? options.body : '',
+                  tag: options && typeof options.tag === 'string' ? options.tag : undefined,
+                  icon: options && typeof options.icon === 'string' ? options.icon : undefined
+                });
+              } catch (e) {}
               this.addEventListener('click', () => window.socialHubNotification?.clicked());
             }
             static get permission() { return NativeNotification.permission; }
@@ -631,6 +640,20 @@ export class ViewManager {
       this.onDownload(update)
       if (state === 'completed' || state === 'interrupted') {
         this.notifications.notifyDownload(update)
+        if (account) {
+          const workspace = this.accounts.getWorkspace(account.workspaceId)
+          this.accounts.addNotification({
+            workspaceId: account.workspaceId,
+            workspaceName: workspace?.name ?? 'Workspace',
+            accountId: account.id,
+            accountName: account.name,
+            accountAppId: account.appId,
+            type: 'download',
+            title: state === 'completed' ? 'Download complete' : 'Download failed',
+            body: filename
+          })
+          this.onNotificationsChanged?.()
+        }
       }
     }
     item.on('updated', () => {

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Account, AccountPermissions, DownloadUpdate, HubState, NewAccount, Preferences, Workspace } from '../main/types'
+import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, NewAccount, Preferences, Workspace } from '../main/types'
 
 export interface SocialHubAPI {
   getState(): Promise<HubState>
@@ -24,6 +24,12 @@ export interface SocialHubAPI {
   renameWorkspace(id: string, name: string): Promise<Workspace>
   deleteWorkspace(id: string): Promise<void>
   activateWorkspace(id: string): Promise<void>
+  getNotifications(): Promise<HubNotificationItem[]>
+  markNotificationRead(id: string): Promise<void>
+  markAllNotificationsRead(): Promise<void>
+  removeNotification(id: string): Promise<void>
+  clearNotifications(): Promise<void>
+  onNotifications(callback: (notifications: HubNotificationItem[]) => void): () => void
 }
 
 const api: SocialHubAPI = {
@@ -48,7 +54,13 @@ const api: SocialHubAPI = {
   addWorkspace: (name) => ipcRenderer.invoke('hub:add-workspace', name),
   renameWorkspace: (id, name) => ipcRenderer.invoke('hub:rename-workspace', id, name),
   deleteWorkspace: (id) => ipcRenderer.invoke('hub:delete-workspace', id),
-  activateWorkspace: (id) => ipcRenderer.invoke('hub:activate-workspace', id)
+  activateWorkspace: (id) => ipcRenderer.invoke('hub:activate-workspace', id),
+  getNotifications: () => ipcRenderer.invoke('hub:get-notifications'),
+  markNotificationRead: (id) => ipcRenderer.invoke('hub:mark-notification-read', id),
+  markAllNotificationsRead: () => ipcRenderer.invoke('hub:mark-all-notifications-read'),
+  removeNotification: (id) => ipcRenderer.invoke('hub:remove-notification', id),
+  clearNotifications: () => ipcRenderer.invoke('hub:clear-notifications'),
+  onNotifications: (callback) => subscribe('hub:notifications', callback)
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {

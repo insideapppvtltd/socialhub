@@ -84,6 +84,24 @@ export interface IncomingCallEvent {
   callType: CallType
 }
 
+export type NotificationType = 'chat' | 'call' | 'download'
+
+export interface HubNotificationItem {
+  id: string
+  workspaceId: string
+  workspaceName: string
+  accountId: string
+  accountName: string
+  accountAppId?: string
+  type: NotificationType
+  title: string
+  body: string
+  timestamp: number
+  read: boolean
+  tag?: string
+  callType?: CallType
+}
+
 export interface HubState {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
