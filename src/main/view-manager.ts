@@ -116,6 +116,13 @@ export class ViewManager {
     return Boolean(account && matchesOrigin(raw, account.url))
   }
 
+  areNotificationsEnabled(accountId: string): boolean {
+    const account = this.accounts.get(accountId)
+    if (!account) return false
+    const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+    return !account.muted && !this.accounts.preferences().doNotDisturb && perms.notifications === 'allow'
+  }
+
   activate(id: string): void {
     if (!this.views.has(id)) throw new Error('Account view not found.')
     const account = this.accounts.get(id)
@@ -199,6 +206,7 @@ export class ViewManager {
     this.sessions.delete(id)
     this.unread.delete(id)
     this.unsupported.delete(id)
+    this.notifications.dismissAllCallsForAccount(id)
     this.accounts.remove(id)
     const nextId = this.accounts.activeId()
     this.activeId = null
@@ -219,12 +227,18 @@ export class ViewManager {
 
   setMuted(id: string, muted: boolean): Account {
     const updated = this.accounts.setMuted(id, muted)
+    if (muted) {
+      this.notifications.dismissAllCallsForAccount(id)
+    }
     this.onStateChanged()
     return { ...updated, unread: this.unread.get(id) ?? 0 }
   }
 
   setAccountPermissions(id: string, permissions: Partial<AccountPermissions>): Account {
     const updated = this.accounts.updatePermissions(id, permissions)
+    if (permissions.notifications === 'block') {
+      this.notifications.dismissAllCallsForAccount(id)
+    }
     this.onStateChanged()
     return { ...updated, unread: this.unread.get(id) ?? 0 }
   }
@@ -266,6 +280,7 @@ export class ViewManager {
     accountSession.setUserAgent(CHROME_USER_AGENT)
     accountSession.setSpellCheckerEnabled(true)
     if (!existingSession) this.configureSession(account.id, accountSession)
+    const isWhatsApp = account.appId === 'whatsapp' || account.url.includes('whatsapp.com')
     const view = new WebContentsView({
       webPreferences: {
         session: accountSession,
@@ -273,7 +288,8 @@ export class ViewManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
-        spellcheck: true
+        spellcheck: true,
+        backgroundThrottling: !isWhatsApp
       }
     })
     view.setBackgroundColor('#ffffff')
@@ -562,6 +578,7 @@ export class ViewManager {
     })
     contents.on('render-process-gone', (_event, details) => {
       console.error(`Web view ${accountId} renderer exited: ${details.reason}`)
+      this.notifications.dismissAllCallsForAccount(accountId)
     })
   }
 

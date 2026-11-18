@@ -21,6 +21,9 @@ const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.social-hub.desktop')
+  }
   let window: BrowserWindow | null = null
   let accountManager: AccountManager
   let viewManager: ViewManager | null = null
@@ -148,6 +151,9 @@ if (!gotLock) {
       makeState,
       (preferences) => {
         nativeTheme.themeSource = preferences.theme
+        if (preferences.doNotDisturb) {
+          notifications.dismissAllCalls()
+        }
         app.setLoginItemSettings({ openAtLogin: preferences.launchAtStartup })
         publishState()
       },

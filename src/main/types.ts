@@ -76,6 +76,14 @@ export interface DownloadUpdate {
   path?: string
 }
 
+export type CallType = 'voice' | 'video'
+
+export interface IncomingCallEvent {
+  callId: string
+  callerName?: string
+  callType: CallType
+}
+
 export interface HubState {
   workspaces: Workspace[]
   activeWorkspaceId: string | null

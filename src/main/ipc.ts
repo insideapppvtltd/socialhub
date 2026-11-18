@@ -3,6 +3,7 @@ import type { AccountManager } from './account-manager'
 import type { HubNotifications } from './notifications'
 import type { ViewManager } from './view-manager'
 import type { AccountPermissions, HubState, Preferences } from './types'
+import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 import { CUSTOM_APP_ID, getCatalogApp } from '../shared/apps'
 import { getGoogleIdToken } from './google-oauth'
 
@@ -229,5 +230,86 @@ export function registerIpc(
       return
     }
     notifications.focusAccount(accountId)
+  })
+  ipcMain.on('hub:incoming-call-start', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame || senderFrame !== event.sender.mainFrame) {
+      console.warn('[CALL][IPC] Rejected incoming-call-start: sender frame is not the main frame')
+      return
+    }
+    const accountId = views.accountForWebContents(event.sender)
+    const frameUrl = senderFrame.url ?? ''
+    if (!accountId || !views.isAccountOrigin(accountId, frameUrl)) {
+      console.warn(`[CALL][IPC] Rejected incoming-call-start: untrusted frame or unknown account (origin: "${frameUrl}", accountId: ${accountId})`)
+      return
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      console.warn('[CALL][IPC] Rejected incoming-call-start: payload is not a valid object')
+      return
+    }
+    const candidate = payload as Record<string, unknown>
+    if (typeof candidate.callId !== 'string' || !candidate.callId.trim() || candidate.callId.length > 100) {
+      console.warn('[CALL][IPC] Rejected incoming-call-start: invalid callId')
+      return
+    }
+    const callType: 'voice' | 'video' = candidate.callType === 'video' ? 'video' : 'voice'
+    const callerName = typeof candidate.callerName === 'string' && candidate.callerName.trim()
+      ? candidate.callerName.trim().slice(0, 100)
+      : undefined
+
+    console.log(`[CALL][IPC] Received hub:incoming-call-start for account: ${accountId} | callId: ${candidate.callId} | type: ${callType}`)
+
+    const account = accounts.get(accountId)
+    if (!account) {
+      console.warn(`[CALL][IPC] Account ${accountId} not found in store`)
+      return
+    }
+
+    const eligible = views.areNotificationsEnabled(accountId)
+    if (!eligible) {
+      const perms = account.permissions ?? DEFAULT_ACCOUNT_PERMISSIONS
+      const reason = account.muted
+        ? 'Account is muted'
+        : accounts.preferences().doNotDisturb
+          ? 'Do Not Disturb is active'
+          : perms.notifications !== 'allow'
+            ? 'Notification permission is blocked'
+            : 'Notifications disabled'
+      console.log(`[CALL][ELIGIBILITY] Notification suppressed for account ${accountId}: ${reason}`)
+      return
+    }
+
+    console.log(`[CALL][ELIGIBILITY] Account ${accountId} is eligible for incoming call notification`)
+    notifications.showIncomingCall(account, {
+      callId: candidate.callId.trim(),
+      callerName,
+      callType
+    })
+  })
+  ipcMain.on('hub:incoming-call-end', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame || senderFrame !== event.sender.mainFrame) {
+      console.warn('[CALL][IPC] Rejected incoming-call-end: sender frame is not the main frame')
+      return
+    }
+    const accountId = views.accountForWebContents(event.sender)
+    const frameUrl = senderFrame.url ?? ''
+    if (!accountId || !views.isAccountOrigin(accountId, frameUrl)) {
+      console.warn(`[CALL][IPC] Rejected incoming-call-end: untrusted frame or unknown account (origin: "${frameUrl}", accountId: ${accountId})`)
+      return
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      console.warn('[CALL][IPC] Rejected incoming-call-end: payload is not a valid object')
+      return
+    }
+    const candidate = payload as Record<string, unknown>
+    if (typeof candidate.callId !== 'string' || !candidate.callId.trim() || candidate.callId.length > 100) {
+      console.warn('[CALL][IPC] Rejected incoming-call-end: invalid callId')
+      return
+    }
+    const callId = candidate.callId.trim()
+
+    console.log(`[CALL][IPC] Received hub:incoming-call-end for account: ${accountId} | callId: ${callId}`)
+    notifications.dismissIncomingCall(accountId, callId)
   })
 }
