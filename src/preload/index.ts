@@ -4,6 +4,7 @@ import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, 
 export interface SocialHubAPI {
   getState(): Promise<HubState>
   getGoogleAuthToken(): Promise<string>
+  cancelGoogleAuth(): Promise<boolean>
   addAccount(account: NewAccount): Promise<Account>
   activateAccount(id: string): Promise<void>
   renameAccount(id: string, name: string): Promise<Account>
@@ -35,6 +36,7 @@ export interface SocialHubAPI {
 const api: SocialHubAPI = {
   getState: () => ipcRenderer.invoke('hub:get-state'),
   getGoogleAuthToken: () => ipcRenderer.invoke('hub:google-auth-token'),
+  cancelGoogleAuth: () => ipcRenderer.invoke('hub:google-auth-cancel'),
   addAccount: (account) => ipcRenderer.invoke('hub:add-account', account),
   activateAccount: (id) => ipcRenderer.invoke('hub:activate-account', id),
   renameAccount: (id, name) => ipcRenderer.invoke('hub:rename-account', id, name),

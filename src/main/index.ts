@@ -162,7 +162,8 @@ if (!gotLock) {
         publishState()
       },
       rendererUrl,
-      process.env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? ''
+      process.env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? '',
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? ''
     )
     publishState()
     publishNotifications()

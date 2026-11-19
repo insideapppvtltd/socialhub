@@ -7,11 +7,12 @@ import { loadEnv } from 'vite'
 const root = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, root, 'VITE_')
+  const env = loadEnv(mode, root, '')
   return {
     main: {
       define: {
-        'process.env.VITE_GOOGLE_OAUTH_CLIENT_ID': JSON.stringify(env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? '')
+        'process.env.VITE_GOOGLE_OAUTH_CLIENT_ID': JSON.stringify(env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? ''),
+        'process.env.GOOGLE_OAUTH_CLIENT_SECRET': JSON.stringify(env.GOOGLE_OAUTH_CLIENT_SECRET ?? env.GOOGLE_CLIENT_SECRET ?? '')
       },
       plugins: [externalizeDepsPlugin()],
       build: {

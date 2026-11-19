@@ -668,7 +668,11 @@ export default function App() {
               title={firebaseUser.email || `Anonymous User (UID: ${firebaseUser.uid})`}
             >
               <div className="user-profile-avatar">
-                <UserIcon size={13} />
+                {firebaseUser.photoURL ? (
+                  <img src={firebaseUser.photoURL} alt="" className="user-profile-img" referrerPolicy="no-referrer" />
+                ) : (
+                  <UserIcon size={13} />
+                )}
               </div>
               <div className="user-profile-text">
                 <span className="user-profile-name">

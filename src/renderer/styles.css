@@ -672,6 +672,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
   :root:not([data-theme="light"]) .theme-btn.selected { background: var(--green); color: #151a17; }
   :root:not([data-theme="light"]) .welcome-error-banner { background: #381a1a; border-color: #5c2828; color: #f87171; }
   :root:not([data-theme="light"]) .logout-button:hover { background: #381a1a; color: #f87171; border-color: #5c2828; }
+  :root:not([data-theme="light"]) .welcome-btn.google-btn:hover:not(:disabled) { background: #28332c; border-color: #405045; }
 }
 
 /* ==========================================================================
@@ -841,13 +842,39 @@ button { color: inherit; font: inherit; cursor: pointer; }
   color: var(--text);
   border-color: var(--line);
   position: relative;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
 
-.welcome-btn.google-btn.disabled {
-  opacity: 0.65;
-  cursor: not-allowed;
+.welcome-btn.google-btn:hover:not(:disabled) {
   background: var(--hover);
-  border-color: var(--line);
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.welcome-btn.google-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.welcome-btn.google-btn:disabled {
+  opacity: 0.75;
+  cursor: wait;
+}
+
+.welcome-cancel-btn {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 4px;
+  align-self: center;
+  transition: color 0.15s ease;
+}
+
+.welcome-cancel-btn:hover {
+  color: var(--text);
 }
 
 .google-icon {

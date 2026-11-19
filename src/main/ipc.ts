@@ -5,7 +5,7 @@ import type { ViewManager } from './view-manager'
 import type { AccountPermissions, HubState, Preferences } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 import { CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
-import { getGoogleIdToken } from './google-oauth'
+import { cancelGoogleAuth, getGoogleIdToken } from './google-oauth'
 
 const accountIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -77,7 +77,8 @@ export function registerIpc(
   getState: () => HubState,
   onPreferencesChanged: (preferences: Preferences) => void,
   devUrl: string | undefined,
-  googleOAuthClientId: string
+  googleOAuthClientId?: string,
+  googleOAuthClientSecret?: string
 ): void {
   const guard = (event: IpcMainInvokeEvent) => assertSidebar(event, window, devUrl)
   const broadcastNotifications = (): void => {
@@ -87,7 +88,14 @@ export function registerIpc(
   }
   ipcMain.handle('hub:google-auth-token', async (event) => {
     guard(event)
-    return getGoogleIdToken(googleOAuthClientId)
+    return getGoogleIdToken({
+      clientId: googleOAuthClientId,
+      clientSecret: googleOAuthClientSecret
+    })
+  })
+  ipcMain.handle('hub:google-auth-cancel', (event) => {
+    guard(event)
+    return cancelGoogleAuth()
   })
   ipcMain.handle('hub:get-state', (event) => {
     guard(event)
