@@ -11,7 +11,6 @@ import {
   Clipboard,
   Download,
   Layers,
-  LogIn,
   LogOut,
   MapPin,
   MessageSquare,
@@ -28,16 +27,18 @@ import {
   ShieldCheck,
   Sun,
   Trash2,
+  User as UserIcon,
   Video,
   Volume2,
   VolumeX,
   X
 } from 'lucide-react'
-import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut, type User } from 'firebase/auth'
+import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth'
 import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
-import { getFirebaseAuth, getFirebaseConfigError } from './firebase'
+import { getFirebaseAuth, logoutUser } from './firebase'
+import { WelcomeScreen } from './WelcomeScreen'
 
 type AccountMenu = { id: string; x: number; y: number } | null
 type EditorDialog =
@@ -45,6 +46,7 @@ type EditorDialog =
   | { kind: 'rename'; account: Account }
   | { kind: 'confirm-remove'; account: Account }
   | { kind: 'confirm-cache'; account: Account }
+  | { kind: 'confirm-logout' }
   | { kind: 'add-workspace' }
   | { kind: 'rename-workspace'; workspace: Workspace }
   | { kind: 'delete-workspace'; workspace: Workspace }
@@ -93,11 +95,9 @@ export default function App() {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [download, setDownload] = useState<DownloadUpdate | null>(null)
-  const [firebaseUser, setFirebaseUser] = useState<User | null>(null)
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null)
   const [firebaseAuthChecked, setFirebaseAuthChecked] = useState(false)
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const firebaseSetupError = getFirebaseConfigError()
-    ?? (!import.meta.env.VITE_GOOGLE_OAUTH_CLIENT_ID ? 'Add VITE_GOOGLE_OAUTH_CLIENT_ID to .env.local.' : null)
 
   const showToast = useCallback((message: string) => {
     setToast(message)
@@ -109,19 +109,14 @@ export default function App() {
     setDialog({ kind: 'add' })
   }, [])
 
-  const toggleFirebaseSignIn = async () => {
+  const handleLogout = useCallback(async () => {
     try {
-      if (firebaseUser) {
-        await signOut(getFirebaseAuth())
-        return
-      }
-      if (firebaseSetupError) throw new Error(firebaseSetupError)
-      const idToken = await window.socialHub.getGoogleAuthToken()
-      await signInWithCredential(getFirebaseAuth(), GoogleAuthProvider.credential(idToken))
+      await logoutUser()
+      showToast('Logged out successfully.')
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Google sign-in failed.')
+      showToast(error instanceof Error ? error.message : 'Logout failed.')
     }
-  }
+  }, [showToast])
 
   const submitAccount = useCallback(async (name: string, appId?: string, url?: string, workspaceId?: string) => {
     try {
@@ -207,10 +202,6 @@ export default function App() {
   }, [addAccount, showToast])
 
   useEffect(() => {
-    if (getFirebaseConfigError()) {
-      setFirebaseAuthChecked(true)
-      return
-    }
     try {
       return onAuthStateChanged(
         getFirebaseAuth(),
@@ -219,20 +210,21 @@ export default function App() {
           setFirebaseAuthChecked(true)
         },
         (error) => {
+          console.error('[AUTH][STATE] Firebase auth state error:', error)
           setFirebaseAuthChecked(true)
           showToast(error.message)
         }
       )
     } catch (error) {
+      console.error('[AUTH][INIT] Firebase auth initialization error:', error)
       setFirebaseAuthChecked(true)
-      showToast(error instanceof Error ? error.message : 'Could not initialize Firebase.')
     }
   }, [showToast])
 
   useEffect(() => {
-    window.socialHub.setSidebarOverlay(Boolean(dialog || menu || workspaceMenuOpen || notificationsOpen))
+    window.socialHub.setSidebarOverlay(Boolean(!firebaseUser || dialog || menu || workspaceMenuOpen || notificationsOpen))
     return () => window.socialHub.setSidebarOverlay(false)
-  }, [dialog, menu, workspaceMenuOpen, notificationsOpen])
+  }, [firebaseUser, dialog, menu, workspaceMenuOpen, notificationsOpen])
 
   const activeWorkspace =
     state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
@@ -361,6 +353,27 @@ export default function App() {
   }
 
   const totalUnread = workspaceAccounts.reduce((sum, account) => sum + account.unread, 0)
+
+  if (!firebaseAuthChecked) {
+    return (
+      <div className="auth-splash-screen" role="status" aria-label="Loading Social HUB">
+        <div className="auth-splash-card">
+          <img src={hubLogo} alt="Social HUB" className="auth-splash-logo" />
+          <div className="auth-splash-spinner" />
+          <p className="auth-splash-text">Starting Social HUB...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!firebaseUser) {
+    return (
+      <WelcomeScreen
+        currentTheme={state.preferences.theme}
+        onThemeChange={(theme) => void setPreference('theme', theme)}
+      />
+    )
+  }
 
   return (
     <main className="hub-shell">
@@ -648,19 +661,36 @@ export default function App() {
               </button>
             </div>
           </div>
-          <button
-            className="firebase-auth-button"
-            disabled={!firebaseAuthChecked}
-            title={firebaseSetupError ?? firebaseUser?.email ?? undefined}
-            onClick={() => void toggleFirebaseSignIn()}
-          >
-            {firebaseUser ? <LogOut size={15} /> : <LogIn size={15} />}
-            <span>
-              {firebaseUser
-                ? `Sign out${firebaseUser.displayName ? ` · ${firebaseUser.displayName}` : ''}`
-                : firebaseSetupError ? 'Google sign-in setup required' : 'Sign in with Google'}
-            </span>
-          </button>
+          {/* User Profile & Logout */}
+          <div className="user-profile-row">
+            <div
+              className="user-profile-info"
+              title={firebaseUser.email || `Anonymous User (UID: ${firebaseUser.uid})`}
+            >
+              <div className="user-profile-avatar">
+                <UserIcon size={13} />
+              </div>
+              <div className="user-profile-text">
+                <span className="user-profile-name">
+                  {firebaseUser.displayName ||
+                    (firebaseUser.isAnonymous ? 'Anonymous' : firebaseUser.email?.split('@')[0] || 'User')}
+                </span>
+                <span className="user-profile-sub">
+                  {firebaseUser.isAnonymous ? `UID: ${firebaseUser.uid.slice(0, 8)}...` : firebaseUser.email}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="logout-button"
+              title="Log out of Social HUB"
+              aria-label="Log out of Social HUB"
+              onClick={() => setDialog({ kind: 'confirm-logout' })}
+            >
+              <LogOut size={13} />
+              <span>Logout</span>
+            </button>
+          </div>
           <button className="startup-row" onClick={() => void setPreference('launchAtStartup', !state.preferences.launchAtStartup)}>
             <span><Volume2 size={15} /> Launch at startup</span>
             <span className={`switch ${state.preferences.launchAtStartup ? 'on' : ''}`} />
@@ -846,6 +876,9 @@ export default function App() {
               setDialog(null)
             } else if (dialog.kind === 'delete-workspace') {
               void submitDeleteWorkspace(dialog.workspace.id)
+            } else if (dialog.kind === 'confirm-logout') {
+              setDialog(null)
+              void handleLogout()
             }
           }}
         />
@@ -1078,6 +1111,32 @@ function HubDialog({
           <div className="dialog-actions">
             <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
             <button type="button" className="dialog-danger" onClick={onConfirm}>Delete workspace</button>
+          </div>
+        </section>
+      </div>
+    )
+  }
+
+  if (dialog.kind === 'confirm-logout') {
+    return (
+      <div
+        className="dialog-backdrop"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose()
+        }}
+      >
+        <section className="hub-dialog" role="alertdialog" aria-modal="true">
+          <h2>Log out of Social HUB?</h2>
+          <p>
+            Are you sure you want to log out? Your workspaces, accounts, notifications, and login sessions will remain safely preserved on this device.
+          </p>
+          <div className="dialog-actions">
+            <button type="button" className="dialog-secondary" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="button" className="dialog-danger" onClick={onConfirm}>
+              Log out
+            </button>
           </div>
         </section>
       </div>
