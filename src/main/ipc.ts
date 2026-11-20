@@ -211,6 +211,25 @@ export function registerIpc(
     guard(event)
     return getState()
   })
+  ipcMain.handle('hub:set-current-user', (event, uid: unknown, localOwners?: unknown) => {
+    guard(event)
+    const userUid = typeof uid === 'string' && uid.trim() ? uid.trim() : null
+    const owners = localOwners && typeof localOwners === 'object' ? (localOwners as Record<string, string>) : undefined
+    accounts.setCurrentUser(userUid, owners)
+    views.switchUser(userUid)
+    window.webContents.send('hub:state', getState())
+    broadcastNotifications()
+    broadcastPasswordsUpdated()
+    return getState()
+  })
+  ipcMain.handle('hub:claim-workspaces', (event, uid: unknown, workspaceIds: unknown) => {
+    guard(event)
+    if (typeof uid !== 'string' || !uid.trim()) throw new Error('Invalid UID.')
+    if (!Array.isArray(workspaceIds)) throw new Error('workspaceIds must be an array.')
+    accounts.claimWorkspaces(uid.trim(), workspaceIds as string[])
+    window.webContents.send('hub:state', getState())
+    return true
+  })
   ipcMain.handle('hub:add-account', (event, value: unknown) => {
     guard(event)
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid account.')

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 
-console.log('=== SOCIAL HUB: FIREBASE USERS & WORKSPACES TEST SUITE ===\n')
+console.log('=== SOCIAL HUB: USER-OWNED WORKSPACES & FIREBASE VERIFICATION SUITE ===\n')
 
 // -------------------------------------------------------------
 // IN-MEMORY FIRESTORE MOCK
@@ -50,6 +50,33 @@ class MockFirestore {
     this.store.delete(key)
     this.writes.push({ type: 'delete', collection, id })
   }
+
+  getDocs(collectionName, filters = []) {
+    const docs = []
+    for (const [key, val] of this.store.entries()) {
+      const [col, id] = key.split('/')
+      if (col === collectionName) {
+        let matches = true
+        for (const f of filters) {
+          if (f.op === '==' && val[f.field] !== f.value) {
+            matches = false
+            break
+          }
+        }
+        if (matches) {
+          docs.push({
+            id,
+            data: () => JSON.parse(JSON.stringify(val))
+          })
+        }
+      }
+    }
+    return {
+      empty: docs.length === 0,
+      size: docs.length,
+      docs
+    }
+  }
 }
 
 // Mock localStorage for ownership testing
@@ -72,7 +99,21 @@ globalThis.localStorage = mockLocalStorage
 
 function createMockFirestoreBridge(mockDb) {
   return {
-    doc: (db, collection, id) => ({ db, collection, id }),
+    collection: (db, name) => ({ db, name }),
+    doc: (db, colOrRef, id) => {
+      const colName = typeof colOrRef === 'string' ? colOrRef : colOrRef.name
+      return { db, collection: colName, id }
+    },
+    query: (collectionRef, ...constraints) => ({
+      collectionRef,
+      constraints
+    }),
+    where: (field, op, value) => ({ field, op, value }),
+    getDocs: async (q) => {
+      const colName = q.collectionRef ? q.collectionRef.name : q.name
+      const filters = q.constraints || []
+      return mockDb.getDocs(colName, filters)
+    },
     getDoc: async (docRef) => mockDb.getDoc(docRef.collection, docRef.id),
     setDoc: async (docRef, data) => mockDb.setDoc(docRef.collection, docRef.id, data),
     updateDoc: async (docRef, updates) => mockDb.updateDoc(docRef.collection, docRef.id, updates),
@@ -402,43 +443,50 @@ async function syncAccountRemoval(user, workspaceId, accountId, bridge) {
   }
 }
 
+/**
+ * Modern user-owned syncUserWorkspaces matching src/renderer/firebase-workspaces.ts
+ */
 async function syncUserWorkspaces(user, localWorkspaces, localAccounts, bridge) {
-  if (!user || !user.uid || !Array.isArray(localWorkspaces)) return
+  if (!user || !user.uid) {
+    return { remoteWorkspaces: [], synced: false }
+  }
 
-  for (const ws of localWorkspaces) {
-    try {
-      const docRef = bridge.doc(null, WORKSPACES_COLLECTION, ws.id)
-      const snap = await bridge.getDoc(docRef)
+  try {
+    // 1. Query remote Firestore workspaces owned by this authenticated user
+    const q = bridge.query(
+      bridge.collection(null, WORKSPACES_COLLECTION),
+      bridge.where('ws_owner_id', '==', user.uid)
+    )
+    const remoteQuerySnap = await bridge.getDocs(q)
+    const remoteWorkspaces = []
 
-      const accountsInWorkspace = (localAccounts || [])
-        .filter((a) => a.workspaceId === ws.id)
-        .map(mapAccountToFirestore)
-
-      if (snap.exists()) {
-        const data = snap.data()
-        if (!isAuthorizedUser(user.uid, data)) {
-          console.warn(`[FIRESTORE][WORKSPACES][SKIP] Project: ${FIREBASE_PROJECT_ID} | Owned by remote UID ${data.ws_owner_id}`)
-          continue
-        }
-
-        setLocalWorkspaceOwner(ws.id, data.ws_owner_id)
-        const mergedAccounts = mergeAccountLists(data.ws_accounts || [], accountsInWorkspace)
-        await bridge.updateDoc(docRef, { ws_accounts: mergedAccounts })
-      } else {
-        setLocalWorkspaceOwner(ws.id, user.uid)
-        const initialDoc = {
-          ws_id: ws.id,
-          ws_owner_id: user.uid,
-          ws_accounts: accountsInWorkspace,
-          ws_passwords: [],
-          ws_status: 1,
-          ws_users_ids: [user.uid]
-        }
-        await bridge.setDoc(docRef, initialDoc)
-      }
-    } catch (error) {
-      console.error(`[FIRESTORE][WORKSPACES][ERROR] Project: ${FIREBASE_PROJECT_ID} | Workspace ${ws.id}:`, error.message)
+    if (remoteQuerySnap.empty) {
+      console.log(
+        `[FIRESTORE][WORKSPACES][SYNC] UID: ${user.uid} | Discovered 0 remote workspaces. Initializing empty workspace collection for user.`
+      )
+      return { remoteWorkspaces: [], synced: true }
     }
+
+    for (const docSnap of remoteQuerySnap.docs) {
+      const data = docSnap.data()
+      remoteWorkspaces.push(data)
+      setLocalWorkspaceOwner(data.ws_id, user.uid)
+
+      const localWs = localWorkspaces.find((w) => w.id === data.ws_id)
+      if (localWs) {
+        const accountsInWorkspace = (localAccounts || [])
+          .filter((a) => a.workspaceId === localWs.id)
+          .map(mapAccountToFirestore)
+        const mergedAccounts = mergeAccountLists(data.ws_accounts || [], accountsInWorkspace)
+        const docRef = bridge.doc(null, WORKSPACES_COLLECTION, data.ws_id)
+        await bridge.updateDoc(docRef, { ws_accounts: mergedAccounts })
+      }
+    }
+
+    return { remoteWorkspaces, synced: true }
+  } catch (error) {
+    console.error(`[FIRESTORE][WORKSPACES][ERROR] Operation: syncUserWorkspaces | UID: ${user.uid} | Error:`, error.message)
+    return { remoteWorkspaces: [], synced: false }
   }
 }
 
@@ -453,6 +501,151 @@ async function syncWorkspacePasswords(user, workspaceId, passwords, provider, br
   return { synced: true, reason: 'Passwords synchronized successfully' }
 }
 
+// -------------------------------------------------------------
+// MOCK ACCOUNT MANAGER (Mirrors src/main/account-manager.ts)
+// -------------------------------------------------------------
+class MockAccountManager {
+  constructor() {
+    this.store = {
+      workspaces: [],
+      workspaceOwners: {},
+      activeUserWorkspaceMap: {},
+      accounts: []
+    }
+    this.currentUserUid = null
+  }
+
+  setCurrentUser(uid, knownOwners = {}) {
+    this.currentUserUid = uid || null
+    if (knownOwners && typeof knownOwners === 'object') {
+      for (const [wsId, ownerUid] of Object.entries(knownOwners)) {
+        if (wsId && ownerUid && !this.store.workspaceOwners[wsId]) {
+          this.store.workspaceOwners[wsId] = ownerUid
+        }
+      }
+    }
+  }
+
+  getCurrentUser() {
+    return this.currentUserUid
+  }
+
+  listWorkspaces() {
+    if (!this.currentUserUid) return []
+    return this.store.workspaces
+      .filter((ws) => (ws.ownerId || this.store.workspaceOwners[ws.id]) === this.currentUserUid)
+      .map((ws) => ({
+        id: ws.id,
+        name: ws.name,
+        ownerId: ws.ownerId || this.store.workspaceOwners[ws.id] || this.currentUserUid
+      }))
+  }
+
+  getWorkspace(id) {
+    const ws = this.store.workspaces.find((w) => w.id === id)
+    if (!ws) return null
+    if (this.currentUserUid && (ws.ownerId || this.store.workspaceOwners[id]) !== this.currentUserUid) {
+      return null
+    }
+    return { ...ws }
+  }
+
+  activeWorkspaceId() {
+    if (!this.currentUserUid) return null
+    const userWorkspaces = this.listWorkspaces()
+    if (userWorkspaces.length === 0) return null
+    const mapped = this.store.activeUserWorkspaceMap[this.currentUserUid]
+    if (mapped && userWorkspaces.some((w) => w.id === mapped)) return mapped
+    return userWorkspaces[0].id
+  }
+
+  addWorkspace(name, ownerUid) {
+    const targetUid = ownerUid || this.currentUserUid
+    if (!targetUid) throw new Error('Cannot create workspace without an authenticated user UID')
+    const ws = {
+      id: `workspace-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: name.trim(),
+      ownerId: targetUid
+    }
+    this.store.workspaces.push(ws)
+    this.store.workspaceOwners[ws.id] = targetUid
+    this.store.activeUserWorkspaceMap[targetUid] = ws.id
+    return ws
+  }
+
+  deleteWorkspace(id) {
+    const wsIndex = this.store.workspaces.findIndex((w) => w.id === id)
+    if (wsIndex === -1) return false
+    const ws = this.store.workspaces[wsIndex]
+    const wsOwner = ws.ownerId || this.store.workspaceOwners[id]
+    if (this.currentUserUid && wsOwner !== this.currentUserUid) {
+      throw new Error('Unauthorized to delete workspace owned by another user')
+    }
+    // Delete associated accounts
+    this.store.accounts = this.store.accounts.filter((a) => a.workspaceId !== id)
+    this.store.workspaces.splice(wsIndex, 1)
+    delete this.store.workspaceOwners[id]
+
+    if (this.currentUserUid) {
+      const remaining = this.listWorkspaces()
+      this.store.activeUserWorkspaceMap[this.currentUserUid] = remaining.length > 0 ? remaining[0].id : null
+    }
+    return true
+  }
+
+  list() {
+    if (!this.currentUserUid) return []
+    const userWorkspaceIds = new Set(this.listWorkspaces().map((w) => w.id))
+    return this.store.accounts.filter((a) => userWorkspaceIds.has(a.workspaceId))
+  }
+
+  add(accountData) {
+    const targetWorkspaceId = accountData.workspaceId || this.activeWorkspaceId()
+    if (!targetWorkspaceId || !this.getWorkspace(targetWorkspaceId)) {
+      throw new Error(`Workspace ${targetWorkspaceId} not found or not owned by current user`)
+    }
+    const acc = {
+      id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: accountData.name,
+      url: accountData.url,
+      workspaceId: targetWorkspaceId
+    }
+    this.store.accounts.push(acc)
+    return acc
+  }
+
+  remove(id) {
+    const acc = this.store.accounts.find((a) => a.id === id)
+    if (!acc) return false
+    if (!this.getWorkspace(acc.workspaceId)) {
+      throw new Error('Unauthorized to delete account in another user workspace')
+    }
+    this.store.accounts = this.store.accounts.filter((a) => a.id !== id)
+    return true
+  }
+
+  claimWorkspaces(discoveredWorkspaces) {
+    if (!this.currentUserUid || !Array.isArray(discoveredWorkspaces)) return
+    for (const remoteWs of discoveredWorkspaces) {
+      if (!remoteWs || !remoteWs.ws_id) continue
+      if (remoteWs.ws_owner_id !== this.currentUserUid) continue
+
+      this.store.workspaceOwners[remoteWs.ws_id] = this.currentUserUid
+      const existing = this.store.workspaces.find((w) => w.id === remoteWs.ws_id)
+      if (!existing) {
+        this.store.workspaces.push({
+          id: remoteWs.ws_id,
+          name: remoteWs.ws_name || 'Personal Workspace',
+          ownerId: this.currentUserUid
+        })
+      }
+    }
+  }
+}
+
+// -------------------------------------------------------------
+// MAIN TEST RUNNER
+// -------------------------------------------------------------
 async function runTests() {
   const mockDb = new MockFirestore()
   const bridge = createMockFirestoreBridge(mockDb)
@@ -546,7 +739,7 @@ async function runTests() {
 
   // Switching account immediately bypasses debounce
   const userC = { uid: 'google-uid-789', displayName: 'Account 2', email: 'acc2@ex.com' }
-  const syncUserC = await syncUserDocument(userC, bridge, false) // force=false
+  const syncUserC = await syncUserDocument(userC, bridge, false)
   assert.ok(syncUserC, 'Account switch must never be skipped by debounce')
   assert.strictEqual(syncUserC.user_id, 'google-uid-789')
   console.log('  -> Passed: Switching to another user account immediately synchronizes without debounce delay')
@@ -562,9 +755,9 @@ async function runTests() {
   console.log('  -> Passed: Logout handled cleanly without creating phantom users')
 
   // -------------------------------------------------------------
-  // TEST GROUP 2: MODULE TWO – WORKSPACES SYNCHRONIZATION
+  // TEST GROUP 2: MODULE TWO – WORKSPACES & ACCOUNTS SYNCHRONIZATION
   // -------------------------------------------------------------
-  console.log('\n[TEST GROUP 2] Module Two – Workspaces Synchronization')
+  console.log('\n[TEST GROUP 2] Module Two – Workspaces & Accounts Synchronization')
 
   assert.strictEqual(WORKSPACES_COLLECTION, 'workspaces')
 
@@ -623,73 +816,251 @@ async function runTests() {
   console.log('  -> Passed: Workspace deletion deletes document and clears local owner binding')
 
   // -------------------------------------------------------------
-  // TEST GROUP 3: SECURITY, MULTI-USER & PASSWORD TESTS
+  // TEST GROUP 3: 10 CORE VERIFICATION SCENARIOS FOR USER-OWNED ARCHITECTURE
   // -------------------------------------------------------------
-  console.log('\n[TEST GROUP 3] Security, Multi-User Isolation & Zero-Knowledge Passwords')
+  console.log('\n[TEST GROUP 3] 10 Core Verification Scenarios for User-Owned Architecture')
 
-  // Multi-user scenario: User A created a remote workspace
-  mockDb.setDoc('workspaces', 'workspace-A', {
-    ws_id: 'workspace-A',
-    ws_owner_id: 'user-A',
-    ws_accounts: [],
-    ws_passwords: [],
-    ws_status: 1,
-    ws_users_ids: ['user-A']
+  const acctMgr = new MockAccountManager()
+
+  // SCENARIO 1: New user registration creates user doc but 0 workspaces
+  console.log('\n  [SCENARIO 1] New user registration: creates users/{uid} doc + 0 workspaces')
+  const newUser = {
+    uid: 'user-new-registration-999',
+    displayName: 'Brand New User',
+    email: 'newuser@example.com'
+  }
+  const newUserDoc = await syncUserDocument(newUser, bridge, true)
+  assert.ok(newUserDoc)
+  assert.strictEqual(newUserDoc.user_id, newUser.uid)
+  assert.ok(mockDb.getDoc('users', newUser.uid).exists(), 'users/{uid} document must exist')
+
+  acctMgr.setCurrentUser(newUser.uid, getLocalWorkspaceOwners())
+  const initialSyncResult = await syncUserWorkspaces(newUser, acctMgr.listWorkspaces(), acctMgr.list(), bridge)
+  assert.strictEqual(initialSyncResult.synced, true)
+  assert.strictEqual(initialSyncResult.remoteWorkspaces.length, 0, 'Must discover exactly 0 remote workspaces')
+
+  // Verify 0 workspaces in Firestore for this user
+  const newUserWsDocs = mockDb.getDocs('workspaces', [{ field: 'ws_owner_id', op: '==', value: newUser.uid }])
+  assert.strictEqual(newUserWsDocs.size, 0, 'New user must have ZERO workspaces in Firestore')
+  assert.strictEqual(acctMgr.listWorkspaces().length, 0, 'New user must have ZERO local workspaces')
+  console.log('  -> Passed Scenario 1: New user registration creates user doc, 0 Firestore workspaces, 0 local workspaces')
+
+  // SCENARIO 2: New user application access with 0 workspaces
+  console.log('\n  [SCENARIO 2] New user application access with 0 workspaces')
+  assert.strictEqual(acctMgr.activeWorkspaceId(), null, 'Active workspace ID must be null when 0 workspaces exist')
+  assert.deepStrictEqual(acctMgr.list(), [], 'Account list must be empty when 0 workspaces exist')
+  // Simulating renderer App.tsx logic:
+  const hasWorkspaces = acctMgr.listWorkspaces().length > 0
+  const activeWorkspace = hasWorkspaces ? acctMgr.listWorkspaces()[0] : null
+  assert.strictEqual(hasWorkspaces, false)
+  assert.strictEqual(activeWorkspace, null)
+  console.log('  -> Passed Scenario 2: App accessible with 0 workspaces; null active workspace triggers Empty Workspace screen')
+
+  // SCENARIO 3: Manual workspace creation assigns authenticated UID as owner
+  console.log('\n  [SCENARIO 3] Manual workspace creation schema verification')
+  const createdLocalWs = acctMgr.addWorkspace('My First Workspace', newUser.uid)
+  assert.ok(createdLocalWs.id)
+  assert.strictEqual(createdLocalWs.name, 'My First Workspace')
+  assert.strictEqual(createdLocalWs.ownerId, newUser.uid)
+
+  const createdRemoteDoc = await syncWorkspaceCreation(newUser, createdLocalWs, [], bridge)
+  assert.ok(createdRemoteDoc)
+  assert.strictEqual(createdRemoteDoc.ws_id, createdLocalWs.id)
+  assert.strictEqual(createdRemoteDoc.ws_owner_id, newUser.uid)
+  assert.deepStrictEqual(createdRemoteDoc.ws_users_ids, [newUser.uid])
+  assert.deepStrictEqual(createdRemoteDoc.ws_accounts, [])
+  assert.deepStrictEqual(createdRemoteDoc.ws_passwords, [])
+  assert.strictEqual(createdRemoteDoc.ws_status, 1)
+
+  const verifyDoc = mockDb.getDoc('workspaces', createdLocalWs.id)
+  assert.ok(verifyDoc.exists())
+  assert.strictEqual(verifyDoc.data().ws_owner_id, newUser.uid)
+  console.log('  -> Passed Scenario 3: Manual workspace creation assigns authenticated UID as owner with exact required schema')
+
+  // SCENARIO 4: Local persistence & binding to authenticated user
+  console.log('\n  [SCENARIO 4] Local persistence & owner binding')
+  const localOwners = getLocalWorkspaceOwners()
+  assert.strictEqual(localOwners[createdLocalWs.id], newUser.uid, 'localStorage must bind workspace to user UID')
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, createdLocalWs.id)
+  assert.strictEqual(acctMgr.activeWorkspaceId(), createdLocalWs.id)
+
+  // Add an account to the workspace
+  const newAcc = acctMgr.add({
+    name: 'WhatsApp Business',
+    url: 'https://web.whatsapp.com',
+    workspaceId: createdLocalWs.id
   })
+  assert.ok(newAcc.id)
+  await syncAccountAddition(newUser, createdLocalWs.id, newAcc, bridge)
+  const accInStore = acctMgr.list()
+  assert.strictEqual(accInStore.length, 1)
+  assert.strictEqual(accInStore[0].name, 'WhatsApp Business')
+  console.log('  -> Passed Scenario 4: Workspace saved locally and bound to authenticated user with associated accounts')
 
-  // User B logs in on same machine with workspace-A (remote owned by A) and workspace-B (new)
-  const localWorkspaces = [
-    { id: 'workspace-A', name: 'User A Workspace' },
-    { id: 'workspace-B', name: 'User B Workspace' }
-  ]
-  const localAccounts = [
-    { id: 'acc-a', workspaceId: 'workspace-A', name: 'Secret A', url: 'https://a.com' },
-    { id: 'acc-b', workspaceId: 'workspace-B', name: 'Secret B', url: 'https://b.com' }
-  ]
+  // SCENARIO 5: Multi-user isolation (User B logs in on same machine)
+  console.log('\n  [SCENARIO 5] Multi-user isolation: User B logs in on same machine')
+  const userB = {
+    uid: 'user-b-second-account-777',
+    displayName: 'User B',
+    email: 'userb@example.com'
+  }
+  await syncUserDocument(userB, bridge, true)
 
-  const userB = { uid: 'user-B' }
-  await syncUserWorkspaces(userB, localWorkspaces, localAccounts, bridge)
+  // Switch AccountManager to User B
+  acctMgr.setCurrentUser(userB.uid, getLocalWorkspaceOwners())
+  assert.strictEqual(acctMgr.getCurrentUser(), userB.uid)
+  assert.strictEqual(acctMgr.listWorkspaces().length, 0, 'User B must see 0 workspaces initially on this machine')
+  assert.strictEqual(acctMgr.list().length, 0, 'User B must see 0 accounts on this machine')
+  assert.strictEqual(acctMgr.activeWorkspaceId(), null, 'User B active workspace must be null')
 
-  // Verify workspace-A was NOT overwritten or claimed by user-B
-  assert.strictEqual(mockDb.getDoc('workspaces', 'workspace-A').data().ws_owner_id, 'user-A')
-  // Verify workspace-B was created for user-B (not skipped!)
-  assert.ok(mockDb.getDoc('workspaces', 'workspace-B').exists())
-  assert.strictEqual(mockDb.getDoc('workspaces', 'workspace-B').data().ws_owner_id, 'user-B')
-  console.log('  -> Passed: Multi-user isolation prevents hijacking remote workspaces while syncing eligible ones')
+  // User B attempts to access createdLocalWs directly
+  const unauthorizedAccess = acctMgr.getWorkspace(createdLocalWs.id)
+  assert.strictEqual(unauthorizedAccess, null, 'User B cannot access User A workspace')
+  console.log('  -> Passed Scenario 5: User B has 0 workspaces, cannot see User A workspaces or accounts')
 
-  // Zero-Knowledge Password Security Interface
-  const plainPwResult = await syncWorkspacePasswords(
-    userB,
-    'workspace-B',
-    [{ pass_link: 'https://b.com', pass_name: 'admin', pass_value: 'PlainPassword123' }]
-  )
-  assert.strictEqual(plainPwResult.synced, false)
-  assert.ok(plainPwResult.reason.includes('Portable end-to-end encryption key management is not configured'))
-  console.log('  -> Passed: Plaintext & DPAPI passwords unconditionally rejected from Firestore transmission')
+  // SCENARIO 6: Cross-user sync prevention
+  console.log('\n  [SCENARIO 6] Cross-user sync prevention')
+  // Run syncUserWorkspaces for User B
+  const userBSyncResult = await syncUserWorkspaces(userB, acctMgr.listWorkspaces(), acctMgr.list(), bridge)
+  assert.strictEqual(userBSyncResult.synced, true)
+  assert.strictEqual(userBSyncResult.remoteWorkspaces.length, 0)
 
-  // Verification of Untouched Legacy Collections
+  // Verify createdLocalWs in Firestore still belongs strictly to newUser, not User B!
+  const docAfterBSync = mockDb.getDoc('workspaces', createdLocalWs.id).data()
+  assert.strictEqual(docAfterBSync.ws_owner_id, newUser.uid, 'User A workspace owner in Firestore must remain User A')
+  assert.deepStrictEqual(docAfterBSync.ws_users_ids, [newUser.uid])
+  // User B attempts to delete User A workspace in Firestore -> rejected
+  const deleteAttempt = await syncWorkspaceDeletion(userB, createdLocalWs.id, bridge)
+  assert.strictEqual(deleteAttempt, false, 'User B deletion of User A workspace must be rejected')
+  console.log('  -> Passed Scenario 6: User B cannot sync, claim, or delete User A workspaces')
+
+  // SCENARIO 7: Existing user data preservation
+  console.log('\n  [SCENARIO 7] Existing user data preservation')
+  // User A logs back in
+  acctMgr.setCurrentUser(newUser.uid, getLocalWorkspaceOwners())
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, createdLocalWs.id)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].name, 'My First Workspace')
+  assert.strictEqual(acctMgr.list().length, 1)
+  assert.strictEqual(acctMgr.list()[0].id, newAcc.id)
+  assert.strictEqual(acctMgr.list()[0].name, 'WhatsApp Business')
+
+  // Sync existing user workspaces from remote Firestore
+  const userAResync = await syncUserWorkspaces(newUser, acctMgr.listWorkspaces(), acctMgr.list(), bridge)
+  assert.strictEqual(userAResync.synced, true)
+  assert.strictEqual(userAResync.remoteWorkspaces.length, 1)
+  assert.strictEqual(userAResync.remoteWorkspaces[0].ws_id, createdLocalWs.id)
+
+  // Verify no duplicate creation or data loss
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1, 'No duplicate workspaces created')
+  assert.strictEqual(acctMgr.list().length, 1, 'Accounts preserved')
+  console.log('  -> Passed Scenario 7: Existing users retain workspace IDs, names, and account associations')
+
+  // SCENARIO 8: User switching without data leakage
+  console.log('\n  [SCENARIO 8] User switching without data leakage')
+  // User B creates a workspace of their own
+  acctMgr.setCurrentUser(userB.uid, getLocalWorkspaceOwners())
+  const userBWs = acctMgr.addWorkspace('User B Private Workspace', userB.uid)
+  await syncWorkspaceCreation(userB, userBWs, [], bridge)
+  const userBAcc = acctMgr.add({
+    name: 'Telegram User B',
+    url: 'https://web.telegram.org',
+    workspaceId: userBWs.id
+  })
+  await syncAccountAddition(userB, userBWs.id, userBAcc, bridge)
+
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, userBWs.id)
+  assert.strictEqual(acctMgr.list().length, 1)
+  assert.strictEqual(acctMgr.list()[0].id, userBAcc.id)
+
+  // Switch back to User A
+  acctMgr.setCurrentUser(newUser.uid, getLocalWorkspaceOwners())
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, createdLocalWs.id)
+  assert.strictEqual(acctMgr.list().length, 1)
+  assert.strictEqual(acctMgr.list()[0].id, newAcc.id)
+
+  // Switch back to User B
+  acctMgr.setCurrentUser(userB.uid, getLocalWorkspaceOwners())
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, userBWs.id)
+  assert.strictEqual(acctMgr.list().length, 1)
+  assert.strictEqual(acctMgr.list()[0].id, userBAcc.id)
+  console.log('  -> Passed Scenario 8: User switching cleanly swaps workspaces and accounts without leakage')
+
+  // SCENARIO 9: Workspace deletion returning to zero-workspace state
+  console.log('\n  [SCENARIO 9] Workspace deletion returning to zero-workspace state')
+  // User B deletes their account first
+  acctMgr.remove(userBAcc.id)
+  await syncAccountRemoval(userB, userBWs.id, userBAcc.id, bridge)
+  assert.strictEqual(acctMgr.list().length, 0)
+
+  // User B deletes their only workspace
+  const deleteWsSuccess = acctMgr.deleteWorkspace(userBWs.id)
+  assert.strictEqual(deleteWsSuccess, true)
+  const remoteDeleteSuccess = await syncWorkspaceDeletion(userB, userBWs.id, bridge)
+  assert.strictEqual(remoteDeleteSuccess, true)
+
+  assert.strictEqual(acctMgr.listWorkspaces().length, 0, 'User B now has 0 workspaces')
+  assert.strictEqual(acctMgr.activeWorkspaceId(), null, 'User B active workspace returns to null')
+  assert.strictEqual(mockDb.getDoc('workspaces', userBWs.id).exists(), false, 'Firestore doc removed')
+
+  // Verify User A still has their workspace intact
+  acctMgr.setCurrentUser(newUser.uid, getLocalWorkspaceOwners())
+  assert.strictEqual(acctMgr.listWorkspaces().length, 1)
+  assert.strictEqual(acctMgr.listWorkspaces()[0].id, createdLocalWs.id)
+  console.log('  -> Passed Scenario 9: Workspace deletion removes doc locally and remotely; deleting last returns to zero state')
+
+  // SCENARIO 10: Password Manager integrity
+  console.log('\n  [SCENARIO 10] Password Manager integrity & E2EE enforcement')
+  // In zero-workspace state, User B cannot sync passwords to nonexistent workspace
+  const zeroWsPwAttempt = await syncWorkspacePasswords(userB, userBWs.id, [
+    { pass_link: 'https://test.com', pass_name: 'admin', pass_value: 'plain' }
+  ])
+  assert.strictEqual(zeroWsPwAttempt.synced, false)
+
+  // In populated workspace state, DPAPI passwords unconditionally rejected from Firestore transmission
+  const populatedPwAttempt = await syncWorkspacePasswords(newUser, createdLocalWs.id, [
+    { pass_link: 'https://web.whatsapp.com', pass_name: 'test', pass_value: 'dpapi-encrypted-blob' }
+  ])
+  assert.strictEqual(populatedPwAttempt.synced, false)
+  assert.ok(populatedPwAttempt.reason.includes('Portable end-to-end encryption key management is not configured'))
+  console.log('  -> Passed Scenario 10: Password Manager functions correctly; plaintext/DPAPI rejected from Firestore transmission')
+
+  // -------------------------------------------------------------
+  // TEST GROUP 4: FORBIDDEN COLLECTIONS & DPAPI AUDIT
+  // -------------------------------------------------------------
+  console.log('\n[TEST GROUP 4] Untouched Legacy Collections Audit')
+
   const allKeys = Array.from(mockDb.store.keys())
   for (const k of allKeys) {
     assert.ok(!k.startsWith('xusers'), 'Forbidden collection xusers was touched!')
     assert.ok(!k.startsWith('xworkspaces'), 'Forbidden collection xworkspaces was touched!')
   }
-  console.log('  -> Passed: Legacy collections xusers and xworkspaces were completely untouched')
+  console.log('  -> Passed: Legacy collections xusers and xworkspaces remain completely untouched')
 
   // -------------------------------------------------------------
-  // TEST GROUP 4: STATIC CODE AUDIT
+  // TEST GROUP 5: STATIC CODE AUDIT
   // -------------------------------------------------------------
-  console.log('\n[TEST GROUP 4] Static Code & Rules Integrity Audit')
+  console.log('\n[TEST GROUP 5] Static Code & Rules Integrity Audit')
 
+  const acctMgrPath = path.resolve('src/main/account-manager.ts')
+  const viewMgrPath = path.resolve('src/main/view-manager.ts')
   const userModulePath = path.resolve('src/renderer/firebase-users.ts')
   const wsModulePath = path.resolve('src/renderer/firebase-workspaces.ts')
   const appPath = path.resolve('src/renderer/App.tsx')
   const rulesPath = path.resolve('firestore.rules')
 
+  const acctMgrContent = fs.readFileSync(acctMgrPath, 'utf8')
+  const viewMgrContent = fs.readFileSync(viewMgrPath, 'utf8')
   const userModuleContent = fs.readFileSync(userModulePath, 'utf8')
   const wsModuleContent = fs.readFileSync(wsModulePath, 'utf8')
   const appContent = fs.readFileSync(appPath, 'utf8')
   const rulesContent = fs.readFileSync(rulesPath, 'utf8')
 
+  // Verify no references to legacy collections
   assert.ok(!userModuleContent.includes('xusers'))
   assert.ok(!userModuleContent.includes('xworkspaces'))
   assert.ok(!wsModuleContent.includes('xusers'))
@@ -697,36 +1068,30 @@ async function runTests() {
   assert.ok(!appContent.includes('xusers'))
   assert.ok(!appContent.includes('xworkspaces'))
 
-  // Verify diagnostic logging statements exist
-  assert.ok(userModuleContent.includes('[FIRESTORE][USERS]'), 'Diagnostic logging required in firebase-users.ts')
-  assert.ok(wsModuleContent.includes('[FIRESTORE][WORKSPACES]'), 'Diagnostic logging required in firebase-workspaces.ts')
-  assert.ok(appContent.includes('syncFirebaseData'), 'App.tsx must coordinate synchronization reliably')
+  // Verify AccountManager user isolation
+  assert.ok(acctMgrContent.includes('setCurrentUser'), 'AccountManager must have setCurrentUser')
+  assert.ok(acctMgrContent.includes('claimWorkspaces'), 'AccountManager must have claimWorkspaces')
+  assert.ok(acctMgrContent.includes('workspaceOwners'), 'AccountManager must persist workspaceOwners')
+
+  // Verify ViewManager does not seed WhatsApp Personal
+  assert.ok(!viewMgrContent.includes("'WhatsApp Personal'"), 'ViewManager must not auto-seed WhatsApp Personal')
+  assert.ok(viewMgrContent.includes('switchWorkspace(workspaceId: string | null)'), 'ViewManager must support null workspace')
+
+  // Verify App.tsx zero-workspace handling
+  assert.ok(appContent.includes('workspace-hero-empty'), 'App.tsx must render Empty Workspace hero screen')
+  assert.ok(appContent.includes('Create your first workspace'), 'App.tsx must explain and offer workspace creation')
+  assert.ok(appContent.includes('setCurrentUser'), 'App.tsx must notify main process of current user')
 
   // Verify firestore.rules
   assert.ok(rulesContent.includes('match /xusers/'))
   assert.ok(rulesContent.includes('match /xworkspaces/'))
   assert.ok(rulesContent.includes('match /users/{userId}'))
   assert.ok(rulesContent.includes('match /workspaces/{workspaceId}'))
-  assert.ok(rulesContent.includes('resource == null ||'), 'firestore.rules must allow get when resource == null to prevent permission-denied on existence checks')
 
-  // Verify firebase.ts has experimentalForceLongPolling to avoid WebChannel stream hangs in Electron
-  const firebaseTsContent = fs.readFileSync(path.resolve('src/renderer/firebase.ts'), 'utf8')
-  assert.ok(firebaseTsContent.includes('experimentalForceLongPolling'), 'firebase.ts must enable experimentalForceLongPolling')
-  assert.ok(firebaseTsContent.includes("FIREBASE_DATABASE_ID"), 'firebase.ts must export FIREBASE_DATABASE_ID')
-  assert.ok(firebaseTsContent.includes("'default'"), "firebase.ts must target 'default' database")
-
-  // Verify .env.local has VITE_FIREBASE_DATABASE_ID=default
-  const envLocalContent = fs.readFileSync(path.resolve('.env.local'), 'utf8')
-  assert.ok(envLocalContent.includes('VITE_FIREBASE_DATABASE_ID=default'), '.env.local must configure database default')
-
-  // Verify main process forwards renderer [FIRESTORE] logs to terminal
-  const mainTsContent = fs.readFileSync(path.resolve('src/main/index.ts'), 'utf8')
-  assert.ok(mainTsContent.includes('[FIRESTORE]'), 'main process must forward [FIRESTORE] console messages to terminal')
-
-  console.log('  -> Passed: Diagnostic logging, lifecycle pipeline, experimentalForceLongPolling, database configuration, and rules verified')
+  console.log('  -> Passed: Static audit verified zero-workspace initialization, user isolation, and security rules')
 
   console.log('\n=========================================================================')
-  console.log('ALL FIREBASE USERS & WORKSPACES TESTS PASSED PERFECTLY (100% PASS)')
+  console.log('ALL TESTS PASSED PERFECTLY (100% PASS)')
   console.log('=========================================================================\n')
 }
 

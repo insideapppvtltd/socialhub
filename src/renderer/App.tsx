@@ -46,7 +46,8 @@ import {
   syncWorkspaceDeletion,
   syncAccountAddition,
   syncAccountUpdate,
-  syncAccountRemoval
+  syncAccountRemoval,
+  getLocalWorkspaceOwners
 } from './firebase-workspaces'
 import { WelcomeScreen } from './WelcomeScreen'
 import { PasswordManager } from './PasswordManager'
@@ -120,13 +121,18 @@ export default function App() {
   }, [])
 
   const addAccount = useCallback(() => {
+    if (state.workspaces.length === 0) {
+      setDialog({ kind: 'add-workspace' })
+      return
+    }
     setDialog({ kind: 'add' })
-  }, [])
+  }, [state.workspaces.length])
 
   const handleLogout = useCallback(async () => {
     try {
       resetUserSyncCache()
       await logoutUser()
+      await window.socialHub.setCurrentUser(null)
       showToast('Logged out successfully.')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Logout failed.')
@@ -146,7 +152,9 @@ export default function App() {
         }
       } else {
         if (!appId) throw new Error('Select an app or website.')
-        const added = await window.socialHub.addAccount({ name, appId, url, workspaceId })
+        const targetWsId = workspaceId || state.activeWorkspaceId || state.workspaces[0]?.id
+        if (!targetWsId) throw new Error('Create a workspace before adding an account.')
+        const added = await window.socialHub.addAccount({ name, appId, url, workspaceId: targetWsId })
         if (firebaseUser) {
           void syncAccountAddition(firebaseUser, added.workspaceId, {
             id: added.id,
@@ -159,7 +167,7 @@ export default function App() {
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not add account.')
     }
-  }, [dialog, firebaseUser, showToast])
+  }, [dialog, firebaseUser, state.activeWorkspaceId, state.workspaces, showToast])
 
   const submitEditAccount = useCallback(async (accountId: string, name: string, url: string) => {
     try {
@@ -182,9 +190,11 @@ export default function App() {
     try {
       const ws = await window.socialHub.addWorkspace(name)
       if (firebaseUser) {
-        void syncWorkspaceCreation(firebaseUser, ws)
+        await syncWorkspaceCreation(firebaseUser, ws)
       }
       await window.socialHub.activateWorkspace(ws.id)
+      const nextState = await window.socialHub.getState()
+      setState(nextState)
       setDialog(null)
       showToast(`Workspace “${ws.name}” created.`)
     } catch (error) {
@@ -208,6 +218,8 @@ export default function App() {
       if (firebaseUser) {
         void syncWorkspaceDeletion(firebaseUser, id)
       }
+      const nextState = await window.socialHub.getState()
+      setState(nextState)
       setDialog(null)
       showToast('Workspace deleted.')
     } catch (error) {
@@ -269,9 +281,15 @@ export default function App() {
         console.log(`[AUTH][SYNC] User document synchronized for UID: ${user.uid}`)
       }
 
-      // 2. Load latest workspaces and accounts, then synchronize eligible workspaces
+      // 2. Discover and synchronize user-owned workspaces from Firestore
       const hubState = await window.socialHub.getState()
-      await syncUserWorkspaces(user, hubState.workspaces, hubState.accounts)
+      const result = await syncUserWorkspaces(user, hubState.workspaces, hubState.accounts)
+      if (result.remoteWorkspaces && result.remoteWorkspaces.length > 0) {
+        const remoteIds = result.remoteWorkspaces.map((w) => w.ws_id)
+        await window.socialHub.claimWorkspaces(user.uid, remoteIds)
+        const updatedState = await window.socialHub.getState()
+        setState(updatedState)
+      }
       console.log(`[AUTH][SYNC] Workspace synchronization pipeline completed for UID: ${user.uid}`)
     } catch (error) {
       console.error(`[AUTH][SYNC] Synchronization pipeline failed for UID: ${user.uid}:`, error)
@@ -282,13 +300,18 @@ export default function App() {
     try {
       return onAuthStateChanged(
         getFirebaseAuth(),
-        (user) => {
+        async (user) => {
           setFirebaseUser(user)
           setFirebaseAuthChecked(true)
           if (user) {
+            const localOwners = getLocalWorkspaceOwners()
+            const nextState = await window.socialHub.setCurrentUser(user.uid, localOwners)
+            setState(nextState)
             void syncFirebaseData(user)
           } else {
             resetUserSyncCache()
+            const nextState = await window.socialHub.setCurrentUser(null)
+            setState(nextState)
           }
         },
         (error) => {
@@ -304,16 +327,20 @@ export default function App() {
   }, [showToast, syncFirebaseData])
 
   useEffect(() => {
-    window.socialHub.setSidebarOverlay(Boolean(!firebaseUser || dialog || menu || workspaceMenuOpen || notificationsOpen || passwordsOpen))
+    window.socialHub.setSidebarOverlay(
+      Boolean(!firebaseUser || state.workspaces.length === 0 || dialog || menu || workspaceMenuOpen || notificationsOpen || passwordsOpen)
+    )
     return () => window.socialHub.setSidebarOverlay(false)
-  }, [firebaseUser, dialog, menu, workspaceMenuOpen, notificationsOpen, passwordsOpen])
+  }, [firebaseUser, state.workspaces.length, dialog, menu, workspaceMenuOpen, notificationsOpen, passwordsOpen])
 
-  const activeWorkspace =
-    state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
-  const currentWorkspaceId = state.activeWorkspaceId ?? activeWorkspace?.id
-  const workspaceAccounts = state.accounts.filter(
-    (account) => account.workspaceId === currentWorkspaceId
-  )
+  const hasWorkspaces = state.workspaces.length > 0
+  const activeWorkspace = hasWorkspaces
+    ? (state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0])
+    : null
+  const currentWorkspaceId = activeWorkspace?.id ?? null
+  const workspaceAccounts = activeWorkspace
+    ? state.accounts.filter((account) => account.workspaceId === currentWorkspaceId)
+    : []
 
   const unreadNotificationsCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
@@ -488,7 +515,7 @@ export default function App() {
             >
               <div className="workspace-info">
                 <span className="workspace-icon"><Layers size={14} /></span>
-                <span className="workspace-name">{activeWorkspace?.name ?? 'Personal'}</span>
+                <span className="workspace-name">{activeWorkspace ? activeWorkspace.name : 'No Workspaces'}</span>
                 <span className="workspace-badge">{workspaceAccounts.length}</span>
               </div>
               <ChevronDown size={13} className={`chevron ${workspaceMenuOpen ? 'rotate' : ''}`} />
@@ -511,7 +538,12 @@ export default function App() {
                 </div>
 
                 <div className="workspace-items-list">
-                  {state.workspaces.map((ws) => {
+                  {state.workspaces.length === 0 ? (
+                    <div className="workspace-menu-empty" style={{ padding: '14px 12px', textAlign: 'center', fontSize: '11px', color: 'var(--muted)' }}>
+                      No workspaces created yet
+                    </div>
+                  ) : (
+                    state.workspaces.map((ws) => {
                     const count = state.accounts.filter((a) => a.workspaceId === ws.id).length
                     const isActive = ws.id === currentWorkspaceId
                     return (
@@ -554,7 +586,8 @@ export default function App() {
                         </div>
                       </div>
                     )
-                  })}
+                  })
+                )}
                 </div>
 
                 <div className="workspace-menu-footer">
@@ -576,12 +609,25 @@ export default function App() {
 
         <section className="account-section" aria-label="Web app accounts">
           <div className="section-heading">
-            <span>{activeWorkspace?.name ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
+            <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
             {totalUnread > 0 && <span className="total-pill">{totalUnread > 99 ? '99+' : totalUnread} unread</span>}
           </div>
 
           <nav className="account-list">
-            {workspaceAccounts.length === 0 ? (
+            {!hasWorkspaces ? (
+              <div className="workspace-empty-state">
+                <p>No workspace created yet</p>
+                <button
+                  className="add-account-empty"
+                  onClick={() => {
+                    setWorkspaceMenuOpen(false)
+                    setDialog({ kind: 'add-workspace' })
+                  }}
+                >
+                  <Plus size={13} /> Create Workspace
+                </button>
+              </div>
+            ) : workspaceAccounts.length === 0 ? (
               <div className="workspace-empty-state">
                 <p>No accounts in this workspace</p>
                 <button className="add-account-empty" onClick={() => void addAccount()}>
@@ -604,7 +650,7 @@ export default function App() {
             )}
           </nav>
 
-          {workspaceAccounts.length > 0 && (
+          {hasWorkspaces && workspaceAccounts.length > 0 && (
             <button className="add-account" onClick={() => void addAccount()}>
               <span className="add-icon"><Plus size={16} /></span>
               <span>Add an account</span>
@@ -933,6 +979,30 @@ export default function App() {
         </div>
       )}
 
+      {!hasWorkspaces && !notificationsOpen && !passwordsOpen && (
+        <div className="workspace-hero-empty" role="region" aria-label="No workspaces created">
+          <div className="workspace-hero-card">
+            <div className="workspace-hero-icon">
+              <Layers size={32} />
+            </div>
+            <h2>No Workspaces Yet</h2>
+            <p>
+              Workspaces keep your social, messaging, and work accounts neatly organized with isolated browser sessions. Create your first workspace to get started.
+            </p>
+            <button
+              className="workspace-hero-btn"
+              onClick={() => {
+                setWorkspaceMenuOpen(false)
+                setDialog({ kind: 'add-workspace' })
+              }}
+            >
+              <Plus size={16} />
+              <span>Create Workspace</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {passwordsOpen && (
         <PasswordManager
           onClose={() => setPasswordsOpen(false)}
@@ -1247,7 +1317,6 @@ function HubDialog({
 
   if (dialog.kind === 'delete-workspace') {
     const accountCount = accounts.filter((a) => a.workspaceId === dialog.workspace.id).length
-    const isOnlyWorkspace = workspaces.length <= 1
 
     if (accountCount > 0) {
       return (
@@ -1258,24 +1327,6 @@ function HubDialog({
             <h2>Cannot delete workspace</h2>
             <p>
               “{dialog.workspace.name}” contains {accountCount} account{accountCount === 1 ? '' : 's'}. You must remove or move all accounts before this workspace can be deleted.
-            </p>
-            <div className="dialog-actions">
-              <button type="button" className="dialog-primary" onClick={onClose}>Understood</button>
-            </div>
-          </section>
-        </div>
-      )
-    }
-
-    if (isOnlyWorkspace) {
-      return (
-        <div className="dialog-backdrop" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) onClose()
-        }}>
-          <section className="hub-dialog" role="alertdialog" aria-modal="true">
-            <h2>Cannot delete workspace</h2>
-            <p>
-              “{dialog.workspace.name}” is your only workspace. Social Hub requires at least one active workspace.
             </p>
             <div className="dialog-actions">
               <button type="button" className="dialog-primary" onClick={onClose}>Understood</button>

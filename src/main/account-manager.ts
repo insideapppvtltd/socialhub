@@ -82,6 +82,8 @@ interface StoreData {
   windowBounds: WindowBounds
   globalDefaultPermissions: AccountPermissions
   notifications: HubNotificationItem[]
+  workspaceOwners?: Record<string, string>
+  activeUserWorkspaceMap?: Record<string, string>
 }
 
 const colors = ['#25a66a', '#4a82d8', '#a16bd3', '#e08a35', '#d75d72', '#248e9a']
@@ -89,14 +91,8 @@ const colors = ['#25a66a', '#4a82d8', '#a16bd3', '#e08a35', '#d75d72', '#248e9a'
 const store = new Store<StoreData>({
   name: 'social-hub',
   defaults: {
-    workspaces: [
-      {
-        id: DEFAULT_WORKSPACE_ID,
-        name: DEFAULT_WORKSPACE_NAME,
-        createdAt: new Date().toISOString()
-      }
-    ],
-    activeWorkspaceId: DEFAULT_WORKSPACE_ID,
+    workspaces: [],
+    activeWorkspaceId: null,
     accounts: [],
     activeAccountId: null,
     preferences: {
@@ -107,41 +103,81 @@ const store = new Store<StoreData>({
     },
     windowBounds: { width: 1180, height: 780 },
     globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS,
-    notifications: []
+    notifications: [],
+    workspaceOwners: {},
+    activeUserWorkspaceMap: {}
   }
 })
 
 export class AccountManager {
+  private currentUserUid: string | null = null
+
   constructor() {
     this.migrate()
   }
 
+  setCurrentUser(uid: string | null, knownOwners?: Record<string, string>): void {
+    this.currentUserUid = uid
+    if (knownOwners && typeof knownOwners === 'object') {
+      const current = store.get('workspaceOwners') || {}
+      store.set('workspaceOwners', { ...current, ...knownOwners })
+    }
+  }
+
+  getCurrentUser(): string | null {
+    return this.currentUserUid
+  }
+
+  getWorkspaceOwner(workspaceId: string): string | undefined {
+    const owners = store.get('workspaceOwners') || {}
+    return owners[workspaceId]
+  }
+
+  setWorkspaceOwner(workspaceId: string, ownerUid: string): void {
+    const owners = store.get('workspaceOwners') || {}
+    owners[workspaceId] = ownerUid
+    store.set('workspaceOwners', owners)
+
+    const all = (store.get('workspaces') as Workspace[]) || []
+    const updated = all.map((w) => (w.id === workspaceId ? { ...w, ownerId: ownerUid } : w))
+    store.set('workspaces', updated)
+  }
+
+  claimWorkspaces(ownerUid: string, workspaceIds: string[]): void {
+    if (!ownerUid || !Array.isArray(workspaceIds)) return
+    const owners = store.get('workspaceOwners') || {}
+    for (const wsId of workspaceIds) {
+      owners[wsId] = ownerUid
+    }
+    store.set('workspaceOwners', owners)
+
+    const all = (store.get('workspaces') as Workspace[]) || []
+    const updated = all.map((w) => (workspaceIds.includes(w.id) ? { ...w, ownerId: ownerUid } : w))
+    store.set('workspaces', updated)
+  }
+
   private migrate(): void {
-    let workspaces = store.get('workspaces') as Workspace[] | undefined
-    if (!workspaces || !Array.isArray(workspaces) || workspaces.length === 0) {
-      const defaultWorkspace: Workspace = {
-        id: DEFAULT_WORKSPACE_ID,
-        name: DEFAULT_WORKSPACE_NAME,
-        createdAt: new Date().toISOString()
-      }
-      workspaces = [defaultWorkspace]
-      store.set('workspaces', workspaces)
-      store.set('activeWorkspaceId', defaultWorkspace.id)
+    const rawWorkspaces = store.get('workspaces') as Workspace[] | undefined
+    if (!rawWorkspaces || !Array.isArray(rawWorkspaces)) {
+      store.set('workspaces', [])
     }
 
-    const fallbackWorkspaceId = workspaces[0].id
-    const currentActiveWorkspaceId = store.get('activeWorkspaceId')
-    if (!currentActiveWorkspaceId || !workspaces.some((w) => w.id === currentActiveWorkspaceId)) {
-      store.set('activeWorkspaceId', fallbackWorkspaceId)
+    if (!store.get('workspaceOwners')) {
+      store.set('workspaceOwners', {})
+    }
+
+    if (!store.get('activeUserWorkspaceMap')) {
+      store.set('activeUserWorkspaceMap', {})
     }
 
     const rawAccounts = store.get('accounts') as StoredAccount[] | undefined
     if (rawAccounts && Array.isArray(rawAccounts) && rawAccounts.length > 0) {
       let modified = false
+      const fallbackWs = (rawWorkspaces && rawWorkspaces[0]?.id) || DEFAULT_WORKSPACE_ID
       const migratedAccounts = rawAccounts.map((account) => {
         let updated = account
         if (!updated.workspaceId) {
-          updated = { ...updated, workspaceId: fallbackWorkspaceId }
+          updated = { ...updated, workspaceId: fallbackWs }
           modified = true
         }
         if (!updated.appId || !updated.url) {
@@ -224,27 +260,24 @@ export class AccountManager {
   // --- Workspaces CRUD ---
 
   listWorkspaces(): Workspace[] {
-    const workspaces = store.get('workspaces')
-    if (!workspaces || workspaces.length === 0) {
-      return [
-        {
-          id: DEFAULT_WORKSPACE_ID,
-          name: DEFAULT_WORKSPACE_NAME,
-          createdAt: new Date().toISOString()
-        }
-      ]
-    }
-    return workspaces
+    if (!this.currentUserUid) return []
+    const all = (store.get('workspaces') as Workspace[]) || []
+    const owners = store.get('workspaceOwners') || {}
+    return all.filter((w) => (w.ownerId && w.ownerId === this.currentUserUid) || owners[w.id] === this.currentUserUid)
   }
 
   getWorkspace(id: string): Workspace | undefined {
     return this.listWorkspaces().find((workspace) => workspace.id === id)
   }
 
-  addWorkspace(name: string): Workspace {
+  addWorkspace(name: string, ownerUid?: string): Workspace {
     const cleanName = name.trim().slice(0, 40)
     if (!cleanName) throw new Error('Workspace name cannot be empty.')
-    const existing = this.listWorkspaces().find(
+    const targetUid = ownerUid || this.currentUserUid
+    if (!targetUid) throw new Error('Cannot create workspace without an authenticated user.')
+
+    const userWorkspaces = this.listWorkspaces()
+    const existing = userWorkspaces.find(
       (w) => w.name.toLowerCase() === cleanName.toLowerCase()
     )
     if (existing) throw new Error(`A workspace named "${cleanName}" already exists.`)
@@ -252,10 +285,13 @@ export class AccountManager {
     const workspace: Workspace = {
       id: randomUUID(),
       name: cleanName,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ownerId: targetUid
     }
-    const updated = [...this.listWorkspaces(), workspace]
-    store.set('workspaces', updated)
+    const allWorkspaces = (store.get('workspaces') as Workspace[]) || []
+    store.set('workspaces', [...allWorkspaces, workspace])
+    this.setWorkspaceOwner(workspace.id, targetUid)
+    this.setActiveWorkspace(workspace.id)
     return workspace
   }
 
@@ -271,9 +307,10 @@ export class AccountManager {
     if (duplicate) throw new Error(`A workspace named "${cleanName}" already exists.`)
 
     const updated: Workspace = { ...target, name: cleanName }
+    const all = (store.get('workspaces') as Workspace[]) || []
     store.set(
       'workspaces',
-      this.listWorkspaces().map((w) => (w.id === id ? updated : w))
+      all.map((w) => (w.id === id ? updated : w))
     )
     return updated
   }
@@ -281,9 +318,6 @@ export class AccountManager {
   deleteWorkspace(id: string): void {
     const target = this.getWorkspace(id)
     if (!target) throw new Error('Workspace not found.')
-    if (this.listWorkspaces().length <= 1) {
-      throw new Error('Cannot delete the only remaining workspace.')
-    }
 
     const accountsInWorkspace = this.list().filter((acc) => acc.workspaceId === id)
     if (accountsInWorkspace.length > 0) {
@@ -294,49 +328,72 @@ export class AccountManager {
       )
     }
 
-    if (this.activeWorkspaceId() === id) {
-      const remaining = this.listWorkspaces().filter((w) => w.id !== id)
-      this.setActiveWorkspace(remaining[0].id)
-    }
-
+    const all = (store.get('workspaces') as Workspace[]) || []
     store.set(
       'workspaces',
-      this.listWorkspaces().filter((w) => w.id !== id)
+      all.filter((w) => w.id !== id)
     )
+
+    const owners = store.get('workspaceOwners') || {}
+    delete owners[id]
+    store.set('workspaceOwners', owners)
+
+    if (this.activeWorkspaceId() === id) {
+      const remaining = this.listWorkspaces().filter((w) => w.id !== id)
+      if (remaining.length > 0) {
+        this.setActiveWorkspace(remaining[0].id)
+      } else if (this.currentUserUid) {
+        const map = (store.get('activeUserWorkspaceMap') as Record<string, string>) || {}
+        delete map[this.currentUserUid]
+        store.set('activeUserWorkspaceMap', map)
+      }
+    }
+
     this.removeNotificationsForWorkspace(id)
   }
 
-  activeWorkspaceId(): string {
-    const active = store.get('activeWorkspaceId')
-    if (active && this.getWorkspace(active)) return active
-    const fallback = this.listWorkspaces()[0]?.id ?? DEFAULT_WORKSPACE_ID
-    store.set('activeWorkspaceId', fallback)
+  activeWorkspaceId(): string | null {
+    if (!this.currentUserUid) return null
+    const map = (store.get('activeUserWorkspaceMap') as Record<string, string>) || {}
+    const active = map[this.currentUserUid]
+    const userWorkspaces = this.listWorkspaces()
+    if (active && userWorkspaces.some((w) => w.id === active)) return active
+    const fallback = userWorkspaces[0]?.id ?? null
+    if (fallback) {
+      map[this.currentUserUid] = fallback
+      store.set('activeUserWorkspaceMap', map)
+    }
     return fallback
   }
 
   setActiveWorkspace(id: string): void {
+    if (!this.currentUserUid) throw new Error('No user logged in.')
     if (!this.getWorkspace(id)) throw new Error('Workspace not found.')
-    store.set('activeWorkspaceId', id)
+    const map = (store.get('activeUserWorkspaceMap') as Record<string, string>) || {}
+    map[this.currentUserUid] = id
+    store.set('activeUserWorkspaceMap', map)
   }
 
   // --- Accounts CRUD ---
 
   list(): StoredAccount[] {
-    const defaultWorkspaceId = this.activeWorkspaceId()
-    return store.get('accounts').map((account) => {
-      let fixed = account
-      if (!fixed.workspaceId) {
-        fixed = { ...fixed, workspaceId: defaultWorkspaceId }
-      }
-      if (!fixed.appId || !fixed.url) {
-        const legacyApp = APP_CATALOG[0]
-        fixed = { ...fixed, appId: legacyApp.id, url: legacyApp.url }
-      }
-      if (!fixed.permissions) {
-        fixed = { ...fixed, permissions: sanitizePermissions(fixed.permissions) }
-      }
-      return fixed
-    })
+    if (!this.currentUserUid) return []
+    const userWorkspaces = this.listWorkspaces()
+    const allowedWsIds = new Set(userWorkspaces.map((w) => w.id))
+    const rawAccounts = (store.get('accounts') as StoredAccount[]) || []
+    return rawAccounts
+      .filter((a) => allowedWsIds.has(a.workspaceId))
+      .map((account) => {
+        let fixed = account
+        if (!fixed.appId || !fixed.url) {
+          const legacyApp = APP_CATALOG[0]
+          fixed = { ...fixed, appId: legacyApp.id, url: legacyApp.url }
+        }
+        if (!fixed.permissions) {
+          fixed = { ...fixed, permissions: sanitizePermissions(fixed.permissions) }
+        }
+        return fixed
+      })
   }
 
   get(id: string): StoredAccount | undefined {
@@ -355,7 +412,7 @@ export class AccountManager {
     if (appId !== CUSTOM_APP_ID && !getCatalogApp(appId)) throw new Error('Unknown app.')
 
     const targetWorkspaceId = workspaceId ?? this.activeWorkspaceId()
-    if (!this.getWorkspace(targetWorkspaceId)) {
+    if (!targetWorkspaceId || !this.getWorkspace(targetWorkspaceId)) {
       throw new Error('Selected workspace does not exist.')
     }
 
@@ -375,7 +432,8 @@ export class AccountManager {
       url,
       permissions: effectivePermissions
     }
-    store.set('accounts', [...accounts, account])
+    const allAccounts = (store.get('accounts') as StoredAccount[]) || []
+    store.set('accounts', [...allAccounts, account])
     store.set('activeAccountId', account.id)
     return account
   }
@@ -492,10 +550,11 @@ export class AccountManager {
   remove(id: string): void {
     const target = this.get(id)
     if (!target) throw new Error('Account not found.')
-    const remaining = this.list().filter((account) => account.id !== id)
+    const allAccounts = (store.get('accounts') as StoredAccount[]) || []
+    const remaining = allAccounts.filter((account) => account.id !== id)
     store.set('accounts', remaining)
     if (store.get('activeAccountId') === id) {
-      const nextInSameWorkspace = remaining.find((a) => a.workspaceId === target.workspaceId)
+      const nextInSameWorkspace = this.list().find((a) => a.workspaceId === target.workspaceId && a.id !== id)
       store.set('activeAccountId', nextInSameWorkspace?.id ?? null)
     }
     this.removeNotificationsForAccount(id)
@@ -640,9 +699,10 @@ export class AccountManager {
     const existing = this.get(id)
     if (!existing) throw new Error('Account not found.')
     const updated = { ...existing, ...patch }
+    const allAccounts = (store.get('accounts') as StoredAccount[]) || []
     store.set(
       'accounts',
-      this.list().map((account) => (account.id === id ? updated : account))
+      allAccounts.map((account) => (account.id === id ? updated : account))
     )
     return updated
   }

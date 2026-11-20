@@ -76,15 +76,10 @@ export class ViewManager {
   ) {}
 
   async initialize(): Promise<void> {
-    let accounts = this.accounts.list()
-    if (accounts.length === 0) {
-      const defaultWorkspaceId = this.accounts.activeWorkspaceId()
-      this.accounts.add('WhatsApp Personal', DEFAULT_APP.id, DEFAULT_APP.url, defaultWorkspaceId)
-      accounts = this.accounts.list()
-    }
+    const accounts = this.accounts.list()
     for (const account of accounts) this.createView(account)
     const activeWorkspaceId = this.accounts.activeWorkspaceId()
-    const workspaceAccounts = accounts.filter((a) => a.workspaceId === activeWorkspaceId)
+    const workspaceAccounts = activeWorkspaceId ? accounts.filter((a) => a.workspaceId === activeWorkspaceId) : []
     const savedActiveId = this.accounts.activeId()
     const targetId = workspaceAccounts.some((a) => a.id === savedActiveId)
       ? savedActiveId
@@ -141,7 +136,55 @@ export class ViewManager {
     this.onStateChanged()
   }
 
-  switchWorkspace(workspaceId: string): void {
+  switchUser(uid: string | null): void {
+    for (const view of this.views.values()) {
+      view.setVisible(false)
+    }
+    this.activeId = null
+    this.accounts.setActive('')
+
+    if (!uid) {
+      this.onStateChanged()
+      return
+    }
+
+    const accounts = this.accounts.list()
+    for (const account of accounts) {
+      if (!this.views.has(account.id)) {
+        this.createView(account)
+      }
+    }
+
+    const activeWorkspaceId = this.accounts.activeWorkspaceId()
+    if (!activeWorkspaceId) {
+      this.onStateChanged()
+      return
+    }
+
+    const workspaceAccounts = accounts.filter((a) => a.workspaceId === activeWorkspaceId)
+    const savedActiveId = this.accounts.activeId()
+    const targetId = workspaceAccounts.some((a) => a.id === savedActiveId)
+      ? savedActiveId
+      : workspaceAccounts[0]?.id ?? null
+
+    if (targetId) {
+      this.activate(targetId)
+    } else {
+      this.onStateChanged()
+    }
+  }
+
+  switchWorkspace(workspaceId: string | null): void {
+    if (!workspaceId) {
+      for (const view of this.views.values()) {
+        view.setVisible(false)
+      }
+      this.activeId = null
+      this.accounts.setActive('')
+      this.onStateChanged()
+      return
+    }
+
     this.accounts.setActiveWorkspace(workspaceId)
     const workspaceAccounts = this.accounts.list().filter((a) => a.workspaceId === workspaceId)
     const currentActiveId = this.accounts.activeId()

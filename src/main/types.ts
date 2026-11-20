@@ -24,10 +24,12 @@ export interface Workspace {
   id: string
   name: string
   createdAt: string
+  ownerId?: string
 }
 
 export interface NewWorkspace {
   name: string
+  ownerId?: string
 }
 
 export interface Account {

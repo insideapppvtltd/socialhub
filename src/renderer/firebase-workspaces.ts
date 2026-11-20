@@ -1,6 +1,10 @@
 import {
+  collection,
   doc,
   getDoc,
+  getDocs,
+  query,
+  where,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -405,98 +409,75 @@ export async function syncAccountRemoval(
 
 /**
  * Synchronizes local workspaces and accounts for an authenticated user.
- * Establishes safe local ownership binding so multi-user accounts on a single machine
- * do not overwrite or claim each other's workspaces.
+ * Queries Firestore to discover only workspaces owned by this authenticated user.
+ * Newly registered users with 0 remote workspaces receive 0 workspaces (no auto-creation).
+ * Preserves existing user workspaces and multi-user isolation on the same machine.
  */
 export async function syncUserWorkspaces(
   user: User | null,
   localWorkspaces: Workspace[],
   localAccounts: Account[],
   firestoreInstance?: Firestore
-): Promise<void> {
-  if (!user || !user.uid || !Array.isArray(localWorkspaces)) {
-    return
+): Promise<{ remoteWorkspaces: FirestoreWorkspaceDocument[]; synced: boolean }> {
+  if (!user || !user.uid) {
+    return { remoteWorkspaces: [], synced: false }
   }
 
   const db = firestoreInstance || getFirebaseFirestore()
   console.log(
-    `[FIRESTORE][WORKSPACES][START] Project: ${FIREBASE_PROJECT_ID} | Operation: syncUserWorkspaces | UID: ${user.uid} | Total Workspaces: ${localWorkspaces.length}`
+    `[FIRESTORE][WORKSPACES][START] Project: ${FIREBASE_PROJECT_ID} | Operation: syncUserWorkspaces | UID: ${user.uid}`
   )
 
-  for (const ws of localWorkspaces) {
-    let currentOp = 'INITIALIZE'
-    try {
-      const db = firestoreInstance || getFirebaseFirestore()
-      const docRef = doc(db, WORKSPACES_COLLECTION, ws.id)
-      currentOp = 'READ'
+  try {
+    // 1. Query remote Firestore workspaces owned by this authenticated user
+    const q = query(
+      collection(db, WORKSPACES_COLLECTION),
+      where('ws_owner_id', '==', user.uid)
+    )
+    const remoteQuerySnap = await getDocs(q)
+    const remoteWorkspaces: FirestoreWorkspaceDocument[] = []
+
+    if (remoteQuerySnap.empty) {
       console.log(
-        `[FIRESTORE][WORKSPACES][READ][START] Project: ${FIREBASE_PROJECT_ID} | Operation: getDoc | Doc: workspaces/${ws.id} | UID: ${user.uid}`
+        `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered 0 remote workspaces. Initializing empty workspace collection for user.`
       )
-      const snap = await getDoc(docRef)
-      console.log(
-        `[FIRESTORE][WORKSPACES][READ][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | Doc: workspaces/${ws.id} | Exists: ${snap.exists()}`
-      )
+      return { remoteWorkspaces: [], synced: true }
+    }
 
-      const accountsInWorkspace = (localAccounts || [])
-        .filter((a) => a.workspaceId === ws.id)
-        .map(mapAccountToFirestore)
+    console.log(
+      `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered ${remoteQuerySnap.size} remote workspace(s).`
+    )
 
-      if (snap.exists()) {
-        const data = snap.data() as FirestoreWorkspaceDocument
-        if (!isAuthorizedUser(user.uid, data)) {
-          console.warn(
-            `[FIRESTORE][WORKSPACES][SKIP] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Doc: workspaces/${ws.id} | Reason: Owned by remote UID ${data.ws_owner_id}`
-          )
-          continue
-        }
+    for (const docSnap of remoteQuerySnap.docs) {
+      const data = docSnap.data() as FirestoreWorkspaceDocument
+      remoteWorkspaces.push(data)
+      setLocalWorkspaceOwner(data.ws_id, user.uid)
 
-        // Establish local binding to the existing remote owner
-        setLocalWorkspaceOwner(ws.id, data.ws_owner_id)
-
-        // Merge accounts safely without duplicating or overwriting unrelated fields
+      // If workspace is also loaded locally, synchronize accounts
+      const localWs = localWorkspaces.find((w) => w.id === data.ws_id)
+      if (localWs) {
+        const accountsInWorkspace = (localAccounts || [])
+          .filter((a) => a.workspaceId === localWs.id)
+          .map(mapAccountToFirestore)
         const mergedAccounts = mergeAccountLists(data.ws_accounts || [], accountsInWorkspace)
-        currentOp = 'WRITE_UPDATE'
+        const docRef = doc(db, WORKSPACES_COLLECTION, data.ws_id)
+        await updateDoc(docRef, { ws_accounts: mergedAccounts })
         console.log(
-          `[FIRESTORE][WORKSPACES][WRITE][START] Project: ${FIREBASE_PROJECT_ID} | Operation: updateDoc | Doc: workspaces/${ws.id} | Accounts: ${mergedAccounts.length}`
-        )
-        await updateDoc(docRef, {
-          ws_accounts: mergedAccounts
-        })
-        console.log(
-          `[FIRESTORE][WORKSPACES][WRITE][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | Operation: update | Doc: workspaces/${ws.id}`
-        )
-      } else {
-        // Document does not exist in Firestore.
-        // Bind local ownership and create initial document in Firestore
-        currentOp = 'WRITE_CREATE'
-        console.log(
-          `[FIRESTORE][WORKSPACES][WRITE][START] Project: ${FIREBASE_PROJECT_ID} | Operation: setDoc | Doc: workspaces/${ws.id} | Owner: ${user.uid} | Accounts: ${accountsInWorkspace.length}`
-        )
-        setLocalWorkspaceOwner(ws.id, user.uid)
-
-        const initialDoc: FirestoreWorkspaceDocument = {
-          ws_id: ws.id,
-          ws_owner_id: user.uid,
-          ws_accounts: accountsInWorkspace,
-          ws_passwords: [],
-          ws_status: 1,
-          ws_users_ids: [user.uid]
-        }
-
-        await setDoc(docRef, initialDoc)
-        console.log(
-          `[FIRESTORE][WORKSPACES][WRITE][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | Operation: create | Doc: workspaces/${ws.id}`
+          `[FIRESTORE][WORKSPACES][UPDATE] Project: ${FIREBASE_PROJECT_ID} | Synchronized accounts for workspace: ${data.ws_id}`
         )
       }
-    } catch (error) {
-      const errObj = error as { code?: string; message?: string }
-      const errCode = errObj?.code || 'UNKNOWN_ERROR'
-      const errMsg = errObj?.message || (error instanceof Error ? error.message : String(error))
-      const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : 'N/A'
-      console.error(
-        `[FIRESTORE][WORKSPACES][ERROR] Stage: ${currentOp} | Project: ${FIREBASE_PROJECT_ID} | Doc: workspaces/${ws.id} | UID: ${user.uid} | Code: ${errCode} | Message: ${errMsg} | NavigatorOnline: ${isOnline}`
-      )
     }
+
+    return { remoteWorkspaces, synced: true }
+  } catch (error) {
+    const errObj = error as { code?: string; message?: string }
+    const errCode = errObj?.code || 'UNKNOWN_ERROR'
+    const errMsg = errObj?.message || (error instanceof Error ? error.message : String(error))
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : 'N/A'
+    console.error(
+      `[FIRESTORE][WORKSPACES][ERROR] Operation: syncUserWorkspaces | Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Code: ${errCode} | Message: ${errMsg} | NavigatorOnline: ${isOnline}`
+    )
+    return { remoteWorkspaces: [], synced: false }
   }
 }
 

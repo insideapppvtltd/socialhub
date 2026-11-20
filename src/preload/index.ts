@@ -5,6 +5,8 @@ import type { CredentialSummary } from '../main/password-manager'
 export type { CredentialSummary }
 
 export interface SocialHubAPI {
+  setCurrentUser(uid: string | null, localOwners?: Record<string, string>): Promise<HubState>
+  claimWorkspaces(uid: string, workspaceIds: string[]): Promise<boolean>
   getState(): Promise<HubState>
   getGoogleAuthToken(): Promise<string>
   cancelGoogleAuth(): Promise<boolean>
@@ -46,6 +48,8 @@ export interface SocialHubAPI {
 }
 
 const api: SocialHubAPI = {
+  setCurrentUser: (uid, localOwners) => ipcRenderer.invoke('hub:set-current-user', uid, localOwners),
+  claimWorkspaces: (uid, workspaceIds) => ipcRenderer.invoke('hub:claim-workspaces', uid, workspaceIds),
   getState: () => ipcRenderer.invoke('hub:get-state'),
   getGoogleAuthToken: () => ipcRenderer.invoke('hub:google-auth-token'),
   cancelGoogleAuth: () => ipcRenderer.invoke('hub:google-auth-cancel'),

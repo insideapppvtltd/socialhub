@@ -65,7 +65,23 @@ assert.match(
   '.privacy-card must have flex-shrink: 0'
 )
 
-console.log('  -> Passed: Sidebar scrolling, sticky header, and fixed elements properly configured.\n')
+// 1.6 Sidebar width and main content area alignment (zero-workspaces & normal)
+assert.match(
+  cssContent,
+  /\.sidebar\s*\{[^}]*width:\s*280px/,
+  '.sidebar must have width: 280px'
+)
+assert.match(
+  cssContent,
+  /\.workspace-hero-empty\s*\{[^}]*left:\s*280px/,
+  '.workspace-hero-empty must start at left: 280px to prevent clipping the 280px sidebar in zero-workspace state'
+)
+assert.ok(
+  !cssContent.includes('.workspace-hero-empty {\n  position: absolute;\n  inset: 0;\n  left: 230px;'),
+  'Forbidden: .workspace-hero-empty must NOT overlap the sidebar with left: 230px'
+)
+
+console.log('  -> Passed: Sidebar scrolling, sticky header, zero-workspace alignment, and fixed elements properly configured.\n')
 
 // =========================================================================
 // TEST 2: Password Manager Mounting & Resilience in App.tsx
