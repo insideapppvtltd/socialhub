@@ -31,6 +31,8 @@ export interface SocialHubAPI {
   removeNotification(id: string): Promise<void>
   clearNotifications(): Promise<void>
   onNotifications(callback: (notifications: HubNotificationItem[]) => void): () => void
+  getActiveCallStatus(): Promise<{ hasActiveCall: boolean; count: number }>
+  onActiveCallStatus(callback: (status: { hasActiveCall: boolean; count: number }) => void): () => void
 }
 
 const api: SocialHubAPI = {
@@ -62,7 +64,9 @@ const api: SocialHubAPI = {
   markAllNotificationsRead: () => ipcRenderer.invoke('hub:mark-all-notifications-read'),
   removeNotification: (id) => ipcRenderer.invoke('hub:remove-notification', id),
   clearNotifications: () => ipcRenderer.invoke('hub:clear-notifications'),
-  onNotifications: (callback) => subscribe('hub:notifications', callback)
+  onNotifications: (callback) => subscribe('hub:notifications', callback),
+  getActiveCallStatus: () => ipcRenderer.invoke('hub:get-active-call-status'),
+  onActiveCallStatus: (callback) => subscribe('hub:active-call-status', callback)
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {

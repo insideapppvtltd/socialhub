@@ -89,6 +89,7 @@ export default function App() {
   const [state, setState] = useState(initialState)
   const [notifications, setNotifications] = useState<HubNotificationItem[]>([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [activeCallCount, setActiveCallCount] = useState(0)
   const [menu, setMenu] = useState<AccountMenu>(null)
   const [dialog, setDialog] = useState<EditorDialog>(null)
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
@@ -175,9 +176,15 @@ export default function App() {
     }).catch((error: unknown) => {
       console.error('Could not load notifications:', error)
     })
+    void window.socialHub.getActiveCallStatus?.().then((status) => {
+      if (active && status) setActiveCallCount(status.count)
+    }).catch(() => {})
     const offState = window.socialHub.onState(setState)
     const offNotifications = window.socialHub.onNotifications((items) => {
       if (active) setNotifications(items)
+    })
+    const offCallStatus = window.socialHub.onActiveCallStatus?.((status) => {
+      if (active && status) setActiveCallCount(status.count)
     })
     const offDownload = window.socialHub.onDownload(setDownload)
     const offShortcut = window.socialHub.onAddAccountShortcut(() => void addAccount())
@@ -194,6 +201,7 @@ export default function App() {
       active = false
       offState()
       offNotifications()
+      offCallStatus?.()
       offDownload()
       offShortcut()
       document.removeEventListener('pointerdown', closeMenusOutside)
@@ -564,6 +572,15 @@ export default function App() {
             <span className="nav-item-left">
               <Bell size={15} />
               <span>Notifications</span>
+              {activeCallCount > 0 && (
+                <span
+                  className="sidebar-call-indicator"
+                  title="Incoming call in progress"
+                  aria-label="Incoming call in progress"
+                >
+                  <PhoneCall size={12} className="sidebar-call-icon" />
+                </span>
+              )}
             </span>
             {unreadNotificationsCount > 0 && (
               <span className="nav-item-badge notifications-unread-badge">

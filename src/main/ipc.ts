@@ -97,6 +97,13 @@ export function registerIpc(
     guard(event)
     return cancelGoogleAuth()
   })
+  ipcMain.handle('hub:get-active-call-status', (event) => {
+    guard(event)
+    return {
+      hasActiveCall: notifications.hasActiveCalls(),
+      count: notifications.getActiveCallCount()
+    }
+  })
   ipcMain.handle('hub:get-state', (event) => {
     guard(event)
     return getState()
