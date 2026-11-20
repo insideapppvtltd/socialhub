@@ -104,6 +104,13 @@ if (!gotLock) {
       if (window === created) window = null
     })
     created.on('ready-to-show', () => created.show())
+    created.webContents.on('console-message', (_event, level, message) => {
+      if (message.startsWith('[FIRESTORE]') || message.startsWith('[AUTH]')) {
+        console.log(message)
+      } else if (level >= 2 && (message.toLowerCase().includes('firestore') || message.toLowerCase().includes('firebase'))) {
+        console.error(`[RENDERER-CONSOLE][ERROR] ${message}`)
+      }
+    })
     if (process.env.ELECTRON_RENDERER_URL) {
       rendererUrl = process.env.ELECTRON_RENDERER_URL
     } else {

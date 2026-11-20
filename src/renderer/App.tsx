@@ -39,6 +39,15 @@ import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, 
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import { getFirebaseAuth, logoutUser } from './firebase'
+import { syncUserDocument, resetUserSyncCache } from './firebase-users'
+import {
+  syncUserWorkspaces,
+  syncWorkspaceCreation,
+  syncWorkspaceDeletion,
+  syncAccountAddition,
+  syncAccountUpdate,
+  syncAccountRemoval
+} from './firebase-workspaces'
 import { WelcomeScreen } from './WelcomeScreen'
 import { PasswordManager } from './PasswordManager'
 
@@ -116,6 +125,7 @@ export default function App() {
 
   const handleLogout = useCallback(async () => {
     try {
+      resetUserSyncCache()
       await logoutUser()
       showToast('Logged out successfully.')
     } catch (error) {
@@ -126,37 +136,61 @@ export default function App() {
   const submitAccount = useCallback(async (name: string, appId?: string, url?: string, workspaceId?: string) => {
     try {
       if (dialog?.kind === 'rename') {
-        await window.socialHub.renameAccount(dialog.account.id, name)
+        const updated = await window.socialHub.renameAccount(dialog.account.id, name)
+        if (firebaseUser) {
+          void syncAccountUpdate(firebaseUser, updated.workspaceId, {
+            id: updated.id,
+            name: updated.name,
+            url: updated.url
+          })
+        }
       } else {
         if (!appId) throw new Error('Select an app or website.')
-        await window.socialHub.addAccount({ name, appId, url, workspaceId })
+        const added = await window.socialHub.addAccount({ name, appId, url, workspaceId })
+        if (firebaseUser) {
+          void syncAccountAddition(firebaseUser, added.workspaceId, {
+            id: added.id,
+            name: added.name,
+            url: added.url
+          })
+        }
       }
       setDialog(null)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not add account.')
     }
-  }, [dialog, showToast])
+  }, [dialog, firebaseUser, showToast])
 
   const submitEditAccount = useCallback(async (accountId: string, name: string, url: string) => {
     try {
-      await window.socialHub.updateAccount(accountId, { name, url })
+      const updated = await window.socialHub.updateAccount(accountId, { name, url })
+      if (firebaseUser) {
+        void syncAccountUpdate(firebaseUser, updated.workspaceId, {
+          id: updated.id,
+          name: updated.name,
+          url: updated.url
+        })
+      }
       setDialog(null)
       showToast('Account updated.')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not update account.')
     }
-  }, [showToast])
+  }, [firebaseUser, showToast])
 
   const submitAddWorkspace = useCallback(async (name: string) => {
     try {
       const ws = await window.socialHub.addWorkspace(name)
+      if (firebaseUser) {
+        void syncWorkspaceCreation(firebaseUser, ws)
+      }
       await window.socialHub.activateWorkspace(ws.id)
       setDialog(null)
       showToast(`Workspace “${ws.name}” created.`)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not create workspace.')
     }
-  }, [showToast])
+  }, [firebaseUser, showToast])
 
   const submitRenameWorkspace = useCallback(async (id: string, name: string) => {
     try {
@@ -171,12 +205,15 @@ export default function App() {
   const submitDeleteWorkspace = useCallback(async (id: string) => {
     try {
       await window.socialHub.deleteWorkspace(id)
+      if (firebaseUser) {
+        void syncWorkspaceDeletion(firebaseUser, id)
+      }
       setDialog(null)
       showToast('Workspace deleted.')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not delete workspace.')
     }
-  }, [showToast])
+  }, [firebaseUser, showToast])
 
   useEffect(() => {
     let active = true
@@ -223,6 +260,24 @@ export default function App() {
     }
   }, [addAccount, showToast])
 
+  const syncFirebaseData = useCallback(async (user: FirebaseUser) => {
+    try {
+      console.log(`[AUTH][SYNC] Initiating synchronization pipeline for UID: ${user.uid}`)
+      // 1. Sync User document (force=true ensures fresh login write is never skipped by debounce)
+      const userDoc = await syncUserDocument(user, undefined, true)
+      if (userDoc) {
+        console.log(`[AUTH][SYNC] User document synchronized for UID: ${user.uid}`)
+      }
+
+      // 2. Load latest workspaces and accounts, then synchronize eligible workspaces
+      const hubState = await window.socialHub.getState()
+      await syncUserWorkspaces(user, hubState.workspaces, hubState.accounts)
+      console.log(`[AUTH][SYNC] Workspace synchronization pipeline completed for UID: ${user.uid}`)
+    } catch (error) {
+      console.error(`[AUTH][SYNC] Synchronization pipeline failed for UID: ${user.uid}:`, error)
+    }
+  }, [])
+
   useEffect(() => {
     try {
       return onAuthStateChanged(
@@ -230,6 +285,11 @@ export default function App() {
         (user) => {
           setFirebaseUser(user)
           setFirebaseAuthChecked(true)
+          if (user) {
+            void syncFirebaseData(user)
+          } else {
+            resetUserSyncCache()
+          }
         },
         (error) => {
           console.error('[AUTH][STATE] Firebase auth state error:', error)
@@ -241,7 +301,7 @@ export default function App() {
       console.error('[AUTH][INIT] Firebase auth initialization error:', error)
       setFirebaseAuthChecked(true)
     }
-  }, [showToast])
+  }, [showToast, syncFirebaseData])
 
   useEffect(() => {
     window.socialHub.setSidebarOverlay(Boolean(!firebaseUser || dialog || menu || workspaceMenuOpen || notificationsOpen || passwordsOpen))
@@ -940,7 +1000,13 @@ export default function App() {
           }}
           onConfirm={() => {
             if (dialog.kind === 'confirm-remove') {
-              void invoke(() => window.socialHub.removeAccount(dialog.account.id), 'Account removed.')
+              const target = dialog.account
+              void invoke(async () => {
+                await window.socialHub.removeAccount(target.id)
+                if (firebaseUser) {
+                  void syncAccountRemoval(firebaseUser, target.workspaceId, target.id)
+                }
+              }, 'Account removed.')
               setDialog(null)
             } else if (dialog.kind === 'confirm-cache') {
               void invoke(() => window.socialHub.clearCache(dialog.account.id), 'Cache cleared.')
