@@ -476,3 +476,288 @@ try {
 } catch (error) {
   console.error('[CALL][PRELOAD] Failed to initialize WhatsApp call detector:', error)
 }
+
+// --- Password Manager Support (Auto-detection, Suggestion, and Auto-save) ---
+
+function initPasswordManagerSupport(): void {
+  function escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
+
+  function isOtpInput(el: HTMLInputElement): boolean {
+    if (el.getAttribute('autocomplete') === 'one-time-code') return true
+    const haystack = `${el.name} ${el.id} ${el.getAttribute('placeholder') || ''} ${el.getAttribute('autocomplete') || ''}`.toLowerCase()
+    return /\b(otp|2fa|mfa|totp|passcode|verification|verification-code|security-code)\b/i.test(haystack)
+  }
+
+  function isCreditCardInput(el: HTMLInputElement): boolean {
+    const haystack = `${el.name} ${el.id} ${el.getAttribute('autocomplete') || ''}`.toLowerCase()
+    return /\b(card|cc-|cvv|cvc|exp|exp-month|exp-year)\b/i.test(haystack)
+  }
+
+  function findAssociatedInputs(target: HTMLInputElement): {
+    usernameInput: HTMLInputElement | null
+    passwordInput: HTMLInputElement | null
+  } {
+    let form = target.closest('form')
+    if (!form) {
+      form = target.closest<HTMLFormElement>(
+        '[role="form"], [data-testid*="login" i], [data-testid*="auth" i], .login-form, .signin-form, main, body'
+      ) as HTMLFormElement
+    }
+    const root = form || document.body
+    const passwords = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="password"]')).filter(
+      (p) => !isOtpInput(p) && !isCreditCardInput(p)
+    )
+    const passwordInput = target.type === 'password' ? target : passwords[0] || null
+
+    const usernames = Array.from(
+      root.querySelectorAll<HTMLInputElement>(
+        'input[autocomplete="username"], input[autocomplete="email"], input[type="email"], input[name*="user" i], input[name*="login" i], input[name*="email" i], input[id*="user" i], input[id*="login" i], input[id*="email" i], input[type="text"]:not([type="password"])'
+      )
+    ).filter((u) => !isOtpInput(u) && !isCreditCardInput(u) && u.type !== 'hidden')
+
+    const usernameInput = target !== passwordInput && (target.type === 'text' || target.type === 'email')
+      ? target
+      : usernames[0] || null
+
+    return { usernameInput, passwordInput }
+  }
+
+  let currentDropdown: HTMLElement | null = null
+
+  function removeDropdown(): void {
+    if (currentDropdown) {
+      currentDropdown.remove()
+      currentDropdown = null
+    }
+  }
+
+  async function showSuggestionsFor(input: HTMLInputElement): Promise<void> {
+    if (isOtpInput(input) || isCreditCardInput(input)) return
+
+    const { usernameInput, passwordInput } = findAssociatedInputs(input)
+    if (!passwordInput) return
+
+    let matches: Array<{ id: string; username: string; accountName: string }> = []
+    try {
+      matches = (await ipcRenderer.invoke('hub:passwords-query-matches', {
+        origin: window.location.origin
+      })) as Array<{ id: string; username: string; accountName: string }>
+    } catch {
+      matches = []
+    }
+
+    if (!matches || matches.length === 0) {
+      removeDropdown()
+      return
+    }
+
+    removeDropdown()
+
+    const rect = input.getBoundingClientRect()
+    const dropdown = document.createElement('div')
+    dropdown.id = '__socialhub_pw_dropdown__'
+    dropdown.setAttribute('role', 'listbox')
+    dropdown.setAttribute('aria-label', 'Saved credentials suggestion')
+
+    Object.assign(dropdown.style, {
+      position: 'fixed',
+      top: `${rect.bottom + 4}px`,
+      left: `${rect.left}px`,
+      minWidth: `${Math.max(220, rect.width)}px`,
+      maxWidth: '360px',
+      background: '#ffffff',
+      color: '#1e2922',
+      border: '1px solid #d0d7d2',
+      borderRadius: '8px',
+      boxShadow: '0 8px 24px rgba(0, 0, 0, 0.18)',
+      zIndex: '2147483647',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      fontSize: '13px',
+      lineHeight: '1.4',
+      overflow: 'hidden',
+      userSelect: 'none',
+      boxSizing: 'border-box'
+    })
+
+    const header = document.createElement('div')
+    Object.assign(header.style, {
+      padding: '7px 12px 5px',
+      fontSize: '10.5px',
+      fontWeight: '600',
+      color: '#65746b',
+      letterSpacing: '0.4px',
+      textTransform: 'uppercase',
+      borderBottom: '1px solid #edf0ed',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '5px'
+    })
+    header.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#138b54" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-1.5 1.5L10 13l-4 4-2-2 4-4 7.5-7.5M15 5l2 2"/></svg> Saved Passwords`
+    dropdown.appendChild(header)
+
+    for (const match of matches) {
+      const item = document.createElement('div')
+      Object.assign(item.style, {
+        padding: '9px 12px',
+        cursor: 'pointer',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+        borderBottom: '1px solid #f6f8f6',
+        transition: 'background 0.15s ease'
+      })
+      item.innerHTML = `
+        <div style="font-weight: 600; color: #16201a; display: flex; align-items: center; gap: 6px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#68776f" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>${escapeHtml(match.username || 'Saved Login')}</span>
+        </div>
+        <div style="font-size: 11px; color: #6d7b73; padding-left: 19px;">${escapeHtml(match.accountName)}</div>
+      `
+
+      item.addEventListener('mouseenter', () => {
+        item.style.background = '#eef6f1'
+      })
+      item.addEventListener('mouseleave', () => {
+        item.style.background = 'transparent'
+      })
+
+      item.addEventListener('mousedown', async (e) => {
+        e.preventDefault()
+        try {
+          const cred = (await ipcRenderer.invoke('hub:passwords-get-fill', { id: match.id })) as {
+            username: string
+            password: string
+          }
+          if (usernameInput && cred.username) {
+            usernameInput.value = cred.username
+            usernameInput.dispatchEvent(new Event('input', { bubbles: true }))
+            usernameInput.dispatchEvent(new Event('change', { bubbles: true }))
+          }
+          if (passwordInput && cred.password) {
+            passwordInput.value = cred.password
+            passwordInput.dispatchEvent(new Event('input', { bubbles: true }))
+            passwordInput.dispatchEvent(new Event('change', { bubbles: true }))
+          }
+        } catch (error) {
+          console.error('[PASSWORDS][FILL] Error filling credential:', error)
+        } finally {
+          removeDropdown()
+        }
+      })
+
+      dropdown.appendChild(item)
+    }
+
+    document.body.appendChild(dropdown)
+    currentDropdown = dropdown
+  }
+
+  // Auto-detect focus on login input fields to display suggestions
+  document.addEventListener(
+    'focusin',
+    (e) => {
+      const target = e.target
+      if (target instanceof HTMLInputElement && (target.type === 'password' || target.type === 'text' || target.type === 'email')) {
+        void showSuggestionsFor(target)
+      }
+    },
+    true
+  )
+
+  // Dismiss suggestions on outside click, escape, or scroll
+  document.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (currentDropdown && !currentDropdown.contains(e.target as Node)) {
+        removeDropdown()
+      }
+    },
+    true
+  )
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      removeDropdown()
+    }
+  })
+
+  window.addEventListener('scroll', removeDropdown, { passive: true })
+
+  // Auto-save on form submit or submit button click
+  let lastSavedSignature = ''
+  let lastSavedTime = 0
+
+  function captureAndSave(sourceEl: HTMLElement): void {
+    const form = sourceEl.closest('form')
+    const root = form || document.body
+    const passwords = Array.from(root.querySelectorAll<HTMLInputElement>('input[type="password"]')).filter(
+      (p) => !isOtpInput(p) && !isCreditCardInput(p)
+    )
+    if (passwords.length === 0) return
+
+    const passwordInput = passwords.find((p) => p.value && p.value.trim().length > 0)
+    if (!passwordInput || !passwordInput.value) return
+
+    const { usernameInput } = findAssociatedInputs(passwordInput)
+    const username = usernameInput ? usernameInput.value.trim() : ''
+    const password = passwordInput.value
+
+    const sig = `${window.location.origin}:${username}:${password}`
+    const now = Date.now()
+    if (sig === lastSavedSignature && now - lastSavedTime < 3000) {
+      return
+    }
+    lastSavedSignature = sig
+    lastSavedTime = now
+
+    ipcRenderer.send('hub:passwords-auto-save', {
+      origin: window.location.origin,
+      username,
+      password
+    })
+  }
+
+  document.addEventListener(
+    'submit',
+    (e) => {
+      if (e.target instanceof HTMLElement) {
+        captureAndSave(e.target)
+      }
+    },
+    true
+  )
+
+  document.addEventListener(
+    'click',
+    (e) => {
+      const btn = (e.target as HTMLElement)?.closest('button, input[type="submit"]')
+      if (btn && btn instanceof HTMLElement) {
+        captureAndSave(btn)
+      }
+    },
+    true
+  )
+
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
+        captureAndSave(e.target)
+      }
+    },
+    true
+  )
+}
+
+try {
+  initPasswordManagerSupport()
+} catch (error) {
+  console.error('[PASSWORDS][PRELOAD] Failed to initialize password manager support:', error)
+}

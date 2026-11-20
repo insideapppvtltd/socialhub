@@ -22,7 +22,7 @@
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button { color: inherit; font: inherit; cursor: pointer; }
 
-.hub-shell { width: 100%; height: 100%; background: transparent; }
+.hub-shell { position: relative; width: 100%; height: 100%; overflow: hidden; background: transparent; }
 .sidebar {
   position: absolute;
   inset: 0 auto 0 0;
@@ -33,8 +33,25 @@ button { color: inherit; font: inherit; cursor: pointer; }
   border-right: 1px solid var(--line);
   user-select: none;
   z-index: 2;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }
-.brand { height: 76px; display: flex; align-items: center; gap: 11px; padding: 0 16px 0 18px; border-bottom: 1px solid var(--line); }
+.sidebar::-webkit-scrollbar {
+  width: 5px;
+}
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+.brand { height: 76px; display: flex; align-items: center; gap: 11px; padding: 0 16px 0 18px; border-bottom: 1px solid var(--line); flex-shrink: 0; position: sticky; top: 0; background: var(--sidebar); z-index: 10; }
 .brand-logo { width: 34px; height: 34px; flex: 0 0 34px; object-fit: cover; border-radius: 10px; box-shadow: 0 4px 11px #17844e30; }
 .brand-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .brand-copy strong { font-size: 13px; letter-spacing: -.15px; }
@@ -42,7 +59,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .icon-button { border: 0; background: transparent; color: #909a93; display: grid; place-items: center; }
 .brand-menu { width: 26px; height: 28px; border-radius: 7px; }
 .brand-menu:hover { background: var(--hover); color: var(--text); }
-.workspace-bar { padding: 9px 11px 4px; border-bottom: 1px solid var(--line); position: relative; }
+.workspace-bar { padding: 9px 11px 4px; border-bottom: 1px solid var(--line); position: sticky; top: 76px; background: var(--sidebar); z-index: 9; flex-shrink: 0; }
 .workspace-dropdown-container { position: relative; width: 100%; }
 .workspace-trigger { width: 100%; height: 33px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; font-weight: 600; transition: border-color .15s, background .15s; }
 .workspace-trigger:hover { background: var(--hover); border-color: #8bc6a3; }
@@ -73,10 +90,10 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .workspace-empty-state { padding: 22px 10px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; border: 1px dashed var(--line); border-radius: 8px; margin: 4px 0; }
 .workspace-empty-state p { margin: 0; font-size: 10px; color: var(--muted); }
 .add-account-empty { display: flex; align-items: center; gap: 6px; padding: 5px 11px; border: 1px solid var(--green); border-radius: 6px; background: var(--green); color: white; font-size: 10px; font-weight: 600; cursor: pointer; }
-.account-section { padding: 14px 11px 8px; }
+.account-section { padding: 14px 11px 8px; flex-shrink: 0; }
 .section-heading { height: 25px; display: flex; align-items: flex-start; justify-content: space-between; padding: 0 7px; color: #929b95; font-size: 9px; font-weight: 700; letter-spacing: .85px; }
 .total-pill { font-size: 9px; line-height: 16px; color: var(--green); background: var(--green-soft); border-radius: 9px; padding: 0 6px; letter-spacing: 0; font-weight: 600; margin-top: -3px; }
-.account-list { display: flex; flex-direction: column; gap: 3px; max-height: 46vh; overflow-y: auto; }
+.account-list { display: flex; flex-direction: column; gap: 3px; }
 .account-row { width: 100%; min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 7px 8px; border: 0; border-radius: 9px; text-align: left; background: transparent; position: relative; }
 .account-row:hover { background: var(--hover); }
 .account-row.active { background: var(--green-soft); }
@@ -93,7 +110,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .add-account:hover { border-color: #8bc6a3; background: #f4faf6; color: var(--green); }
 .add-icon { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: var(--green); background: var(--green-soft); }
 .add-account kbd { margin-left: auto; padding: 2px 5px; border: 1px solid #e6eae6; border-radius: 4px; color: #9aa39c; font: 9px inherit; }
-.privacy-card { margin: auto 12px 0; display: flex; gap: 9px; padding: 11px 10px; border: 1px solid #e9eeea; border-radius: 9px; background: #f8faf8; }
+.privacy-card { margin: 12px 12px 0; display: flex; gap: 9px; padding: 11px 10px; border: 1px solid #e9eeea; border-radius: 9px; background: #f8faf8; flex-shrink: 0; }
 .privacy-icon { width: 25px; height: 25px; display: grid; place-items: center; flex: 0 0 25px; color: #389465; background: #e7f4eb; border-radius: 7px; }
 .privacy-card strong { font-size: 10px; font-weight: 650; }
 .privacy-card p { margin: 4px 0 0; color: #858e88; font-size: 9px; line-height: 1.45; }
@@ -103,7 +120,7 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .progress-track { height: 3px; border-radius: 2px; background: #e7ede8; margin-top: 3px; }
 .progress-track span { height: 100%; display: block; border-radius: inherit; background: #25a567; transition: width .15s; }
 .tiny-close { border: 0; background: transparent; color: #9ba49e; font-size: 17px; line-height: 13px; }
-.sidebar-footer { margin-top: 12px; border-top: 1px solid var(--line); padding: 11px 12px 10px; }
+.sidebar-footer { margin-top: 12px; border-top: 1px solid var(--line); padding: 11px 12px 16px; flex-shrink: 0; }
 .dnd-toggle, .startup-row { width: 100%; height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 5px; border: 0; border-radius: 7px; background: transparent; color: #58635b; text-align: left; font-size: 10px; }
 .dnd-toggle:hover, .startup-row:hover { background: var(--hover); }
 .dnd-toggle.enabled { color: #b36c30; }
@@ -1077,4 +1094,611 @@ button { color: inherit; font: inherit; cursor: pointer; }
   background: #381a1a;
   color: #f87171;
   border-color: #5c2828;
+}
+
+/* ==========================================================================
+   Password Manager
+   ========================================================================== */
+
+.passwords-nav-btn {
+  width: 100%;
+  height: 33px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #58635b;
+  text-align: left;
+  font-size: 10px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.passwords-nav-btn:hover, .passwords-nav-btn.active {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.passwords-screen {
+  position: absolute;
+  left: 280px;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  overflow: hidden;
+  animation: passwordsFadeIn .15s ease-out;
+}
+
+@keyframes passwordsFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.passwords-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.passwords-title-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.passwords-icon-wrap {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--green-soft);
+  color: var(--green);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.passwords-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.passwords-subtitle {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.passwords-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 320px;
+  max-width: 100%;
+  height: 34px;
+  background: var(--sidebar);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  gap: 8px;
+}
+
+.passwords-search-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.passwords-search-input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.passwords-search-input::placeholder {
+  color: var(--muted);
+}
+
+.passwords-search-clear {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  display: grid;
+  place-items: center;
+}
+
+.passwords-search-clear:hover {
+  color: var(--text);
+}
+
+.passwords-close-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all .15s;
+  flex-shrink: 0;
+}
+
+.passwords-close-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.passwords-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.passwords-loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.passwords-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  max-width: 440px;
+  margin: 0 auto;
+}
+
+.passwords-empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: var(--green-soft);
+  color: var(--green);
+  display: grid;
+  place-items: center;
+  margin-bottom: 16px;
+}
+
+.passwords-empty h3 {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.passwords-empty p {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.passwords-retry-btn {
+  margin-top: 14px;
+  padding: 6px 14px;
+  border: 1px solid var(--green);
+  border-radius: 7px;
+  background: var(--green);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+.passwords-retry-btn:hover {
+  opacity: 0.9;
+}
+
+.passwords-hierarchy {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.passwords-workspace-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.passwords-workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+
+.passwords-ws-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.passwords-ws-icon {
+  color: var(--green);
+}
+
+.passwords-ws-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.passwords-ws-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.passwords-ws-badge {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--hover);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 550;
+}
+
+.passwords-workspace-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.passwords-account-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.passwords-account-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.passwords-account-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.passwords-account-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.passwords-sites-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 14px;
+  border-left: 2px solid var(--line);
+  margin-left: 3px;
+}
+
+.passwords-site-group {
+  background: var(--sidebar);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.passwords-site-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.passwords-site-icon {
+  color: var(--muted);
+}
+
+.passwords-site-origin {
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.passwords-credentials-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.passwords-cred-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+
+.passwords-cred-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.passwords-cred-label {
+  color: var(--muted);
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.passwords-cred-value-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.passwords-cred-value {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.passwords-no-user {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.passwords-cred-password-text {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  letter-spacing: 1px;
+}
+
+.passwords-copy-btn,
+.passwords-reveal-btn {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .15s;
+}
+
+.passwords-copy-btn:hover,
+.passwords-reveal-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.passwords-copied-icon {
+  color: var(--green);
+}
+
+.passwords-cred-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.passwords-edit-btn,
+.passwords-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 4px;
+  transition: all .15s;
+}
+
+.passwords-edit-btn {
+  color: var(--muted);
+}
+
+.passwords-edit-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.passwords-delete-btn {
+  color: #c95151;
+}
+
+.passwords-delete-btn:hover {
+  background: #fee2e2;
+}
+
+/* Edit Credential Modal Dialog */
+.hub-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.hub-dialog-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.hub-dialog-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+
+.hub-dialog-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.hub-dialog-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.hub-dialog-field-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+  display: block;
+}
+
+.hub-dialog-input-disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.hub-dialog-password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 13px;
+}
+
+.hub-dialog-password-input-wrap input {
+  margin-bottom: 0 !important;
+  padding-right: 36px !important;
+}
+
+.hub-dialog-password-toggle {
+  position: absolute;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+}
+
+.hub-dialog-password-toggle:hover {
+  color: var(--text);
+}
+
+.hub-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.hub-dialog-cancel {
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.hub-dialog-cancel:hover {
+  background: var(--hover);
+}
+
+.hub-dialog-submit {
+  padding: 6px 14px;
+  border: 1px solid var(--green);
+  border-radius: 7px;
+  background: var(--green);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hub-dialog-submit:hover {
+  opacity: 0.9;
+}
+
+/* Dark theme overrides for Password Manager */
+[data-theme="dark"] .passwords-nav-btn {
+  color: #acb7ae;
+}
+
+[data-theme="dark"] .passwords-nav-btn:hover,
+[data-theme="dark"] .passwords-nav-btn.active {
+  color: var(--text);
+}
+
+[data-theme="dark"] .passwords-delete-btn:hover {
+  background: #381a1a;
+  color: #f87171;
+}
+
+:root:not([data-theme="light"]) .passwords-nav-btn {
+  color: #acb7ae;
+}
+
+:root:not([data-theme="light"]) .passwords-nav-btn:hover,
+:root:not([data-theme="light"]) .passwords-nav-btn.active {
+  color: var(--text);
+}
+
+:root:not([data-theme="light"]) .passwords-delete-btn:hover {
+  background: #381a1a;
+  color: #f87171;
 }

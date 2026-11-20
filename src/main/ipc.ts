@@ -1,7 +1,8 @@
-import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { clipboard, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AccountManager } from './account-manager'
 import type { HubNotifications } from './notifications'
 import type { ViewManager } from './view-manager'
+import type { PasswordManager } from './password-manager'
 import type { AccountPermissions, HubState, Preferences } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 import { CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
@@ -78,7 +79,8 @@ export function registerIpc(
   onPreferencesChanged: (preferences: Preferences) => void,
   devUrl: string | undefined,
   googleOAuthClientId?: string,
-  googleOAuthClientSecret?: string
+  googleOAuthClientSecret?: string,
+  passwordManager?: PasswordManager
 ): void {
   const guard = (event: IpcMainInvokeEvent) => assertSidebar(event, window, devUrl)
   const broadcastNotifications = (): void => {
@@ -86,6 +88,107 @@ export function registerIpc(
       window.webContents.send('hub:notifications', accounts.getNotifications())
     }
   }
+  const broadcastPasswordsUpdated = (): void => {
+    if (!window.isDestroyed()) {
+      window.webContents.send('hub:passwords-updated')
+    }
+  }
+  ipcMain.handle('hub:passwords-list', (event) => {
+    guard(event)
+    return passwordManager?.listSummaries(accounts.listWorkspaces(), accounts.list()) ?? []
+  })
+  ipcMain.handle('hub:passwords-get-password', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid credential ID.')
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    return passwordManager.getDecryptedPassword(id.trim())
+  })
+  ipcMain.handle('hub:passwords-copy-password', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid credential ID.')
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    const plain = passwordManager.getDecryptedPassword(id.trim())
+    clipboard.writeText(plain)
+    return true
+  })
+  ipcMain.handle('hub:passwords-update', (event, payload: unknown) => {
+    guard(event)
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('Invalid payload.')
+    }
+    const data = payload as { id?: unknown; username?: unknown; password?: unknown }
+    if (typeof data.id !== 'string' || !data.id.trim()) throw new Error('Invalid credential ID.')
+    const username = typeof data.username === 'string' ? data.username : ''
+    const password = typeof data.password === 'string' && data.password.trim() ? data.password : undefined
+    const updated = passwordManager.updateCredential(data.id.trim(), username, password)
+    broadcastPasswordsUpdated()
+    return updated
+  })
+  ipcMain.handle('hub:passwords-delete', (event, id: unknown) => {
+    guard(event)
+    if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid credential ID.')
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    const deleted = passwordManager.deleteCredential(id.trim())
+    if (deleted) {
+      broadcastPasswordsUpdated()
+    }
+    return deleted
+  })
+  ipcMain.handle('hub:passwords-query-matches', (event, _payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame) return []
+    const accountId = views.accountForWebContents(event.sender)
+    if (!accountId) return []
+    const account = accounts.get(accountId)
+    if (!account || !passwordManager) return []
+
+    const origin = senderFrame.url ? new URL(senderFrame.url).origin : ''
+    if (!origin || origin.startsWith('data:') || origin.startsWith('about:')) return []
+
+    return passwordManager.queryMatches(account.workspaceId, origin, accounts.list())
+  })
+  ipcMain.handle('hub:passwords-get-fill', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame) throw new Error('Unauthorized sender.')
+    const accountId = views.accountForWebContents(event.sender)
+    if (!accountId) throw new Error('Account not found.')
+    const account = accounts.get(accountId)
+    if (!account || !passwordManager) throw new Error('Account not found.')
+
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid payload.')
+    const data = payload as { id?: unknown }
+    if (typeof data.id !== 'string' || !data.id.trim()) throw new Error('Invalid ID.')
+
+    const origin = senderFrame.url ? new URL(senderFrame.url).origin : ''
+    if (!origin) throw new Error('Invalid origin.')
+
+    return passwordManager.getFillCredential(data.id.trim(), account.workspaceId, origin)
+  })
+  ipcMain.on('hub:passwords-auto-save', (event, payload: unknown) => {
+    const senderFrame = event.senderFrame
+    if (!senderFrame) return
+    const accountId = views.accountForWebContents(event.sender)
+    if (!accountId) return
+    const account = accounts.get(accountId)
+    if (!account || !passwordManager) return
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return
+    const data = payload as { origin?: unknown; username?: unknown; password?: unknown }
+    if (typeof data.password !== 'string' || !data.password.trim()) return
+
+    const frameOrigin = senderFrame.url ? new URL(senderFrame.url).origin : ''
+    if (!frameOrigin || frameOrigin.startsWith('data:') || frameOrigin.startsWith('about:')) return
+
+    const username = typeof data.username === 'string' ? data.username.trim() : ''
+
+    try {
+      passwordManager.saveCredential(account.workspaceId, account.id, frameOrigin, username, data.password)
+      broadcastPasswordsUpdated()
+    } catch (error) {
+      console.warn('[PASSWORDS][SAVE] Auto-save failed:', error)
+    }
+  })
   ipcMain.handle('hub:google-auth-token', async (event) => {
     guard(event)
     return getGoogleIdToken({
@@ -159,10 +262,12 @@ export function registerIpc(
   ipcMain.handle('hub:delete-workspace', (event, id: unknown) => {
     guard(event)
     if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid workspace ID.')
+    passwordManager?.deleteForWorkspace(id)
     accounts.deleteWorkspace(id)
     views.switchWorkspace(accounts.activeWorkspaceId())
     window.webContents.send('hub:state', getState())
     broadcastNotifications()
+    broadcastPasswordsUpdated()
   })
   ipcMain.handle('hub:activate-workspace', (event, id: unknown) => {
     guard(event)
@@ -231,8 +336,10 @@ export function registerIpc(
   ipcMain.handle('hub:remove-account', async (event, id: unknown) => {
     guard(event)
     assertAccountId(id)
+    passwordManager?.deleteForAccount(id)
     await views.removeAccount(id)
     broadcastNotifications()
+    broadcastPasswordsUpdated()
   })
   ipcMain.handle('hub:update-preferences', (event, value: unknown) => {
     guard(event)

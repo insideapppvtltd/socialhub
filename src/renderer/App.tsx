@@ -10,6 +10,7 @@ import {
   CircleHelp,
   Clipboard,
   Download,
+  KeyRound,
   Layers,
   LogOut,
   MapPin,
@@ -39,6 +40,7 @@ import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import { getFirebaseAuth, logoutUser } from './firebase'
 import { WelcomeScreen } from './WelcomeScreen'
+import { PasswordManager } from './PasswordManager'
 
 type AccountMenu = { id: string; x: number; y: number } | null
 type EditorDialog =
@@ -89,6 +91,7 @@ export default function App() {
   const [state, setState] = useState(initialState)
   const [notifications, setNotifications] = useState<HubNotificationItem[]>([])
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [passwordsOpen, setPasswordsOpen] = useState(false)
   const [activeCallCount, setActiveCallCount] = useState(0)
   const [menu, setMenu] = useState<AccountMenu>(null)
   const [dialog, setDialog] = useState<EditorDialog>(null)
@@ -178,7 +181,7 @@ export default function App() {
     })
     void window.socialHub.getActiveCallStatus?.().then((status) => {
       if (active && status) setActiveCallCount(status.count)
-    }).catch(() => {})
+    }).catch(() => { })
     const offState = window.socialHub.onState(setState)
     const offNotifications = window.socialHub.onNotifications((items) => {
       if (active) setNotifications(items)
@@ -230,9 +233,9 @@ export default function App() {
   }, [showToast])
 
   useEffect(() => {
-    window.socialHub.setSidebarOverlay(Boolean(!firebaseUser || dialog || menu || workspaceMenuOpen || notificationsOpen))
+    window.socialHub.setSidebarOverlay(Boolean(!firebaseUser || dialog || menu || workspaceMenuOpen || notificationsOpen || passwordsOpen))
     return () => window.socialHub.setSidebarOverlay(false)
-  }, [firebaseUser, dialog, menu, workspaceMenuOpen, notificationsOpen])
+  }, [firebaseUser, dialog, menu, workspaceMenuOpen, notificationsOpen, passwordsOpen])
 
   const activeWorkspace =
     state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
@@ -246,12 +249,21 @@ export default function App() {
     [notifications]
   )
 
+  const handleSelectAccount = useCallback((accountId: string) => {
+    setPasswordsOpen(false)
+    setNotificationsOpen(false)
+    void window.socialHub.activateAccount(accountId).catch((error: unknown) => {
+      showToast(error instanceof Error ? error.message : 'Could not switch accounts.')
+    })
+  }, [showToast])
+
   const handleNotificationClick = async (notif: HubNotificationItem) => {
     try {
       if (!notif.read) {
         await window.socialHub.markNotificationRead(notif.id)
       }
       setNotificationsOpen(false)
+      setPasswordsOpen(false)
       const targetAccount = state.accounts.find((a) => a.id === notif.accountId)
       if (!targetAccount) {
         showToast('Account no longer exists.')
@@ -304,7 +316,7 @@ export default function App() {
         const account = workspaceAccounts[Number(event.key) - 1]
         if (account) {
           event.preventDefault()
-          void window.socialHub.activateAccount(account.id)
+          handleSelectAccount(account.id)
         }
       } else if (event.key.toLowerCase() === 'r' && state.activeAccountId) {
         event.preventDefault()
@@ -437,6 +449,8 @@ export default function App() {
                         className={`workspace-menu-item ${isActive ? 'active' : ''}`}
                         onClick={() => {
                           setWorkspaceMenuOpen(false)
+                          setPasswordsOpen(false)
+                          setNotificationsOpen(false)
                           void window.socialHub.activateWorkspace(ws.id).catch((err: unknown) => {
                             showToast(err instanceof Error ? err.message : 'Could not switch workspace.')
                           })
@@ -509,11 +523,7 @@ export default function App() {
                   key={account.id}
                   account={account}
                   active={account.id === state.activeAccountId}
-                  onSelect={() => {
-                    void window.socialHub.activateAccount(account.id).catch((error: unknown) => {
-                      showToast(error instanceof Error ? error.message : 'Could not switch accounts.')
-                    })
-                  }}
+                  onSelect={() => handleSelectAccount(account.id)}
                   onContextMenu={(event) => {
                     event.preventDefault()
                     setMenu({ id: account.id, x: Math.min(event.clientX, window.innerWidth - 230), y: event.clientY })
@@ -565,7 +575,10 @@ export default function App() {
           </button>
           <button
             className={`sidebar-nav-item notifications-nav-btn ${notificationsOpen ? 'active' : ''}`}
-            onClick={() => setNotificationsOpen((open) => !open)}
+            onClick={() => {
+              setPasswordsOpen(false)
+              setNotificationsOpen((open) => !open)
+            }}
             aria-haspopup="dialog"
             aria-expanded={notificationsOpen}
           >
@@ -587,6 +600,20 @@ export default function App() {
                 {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
               </span>
             )}
+          </button>
+          <button
+            className={`sidebar-nav-item passwords-nav-btn ${passwordsOpen ? 'active' : ''}`}
+            onClick={() => {
+              setNotificationsOpen(false)
+              setPasswordsOpen((open) => !open)
+            }}
+            aria-haspopup="dialog"
+            aria-expanded={passwordsOpen}
+          >
+            <span className="nav-item-left">
+              <KeyRound size={15} />
+              <span>Passwords</span>
+            </span>
           </button>
           <button
             className="sidebar-nav-item permissions-nav-btn"
@@ -833,6 +860,13 @@ export default function App() {
             )}
           </div>
         </div>
+      )}
+
+      {passwordsOpen && (
+        <PasswordManager
+          onClose={() => setPasswordsOpen(false)}
+          showToast={showToast}
+        />
       )}
 
       {menu && (
@@ -1313,49 +1347,49 @@ function PermissionsDialog({
     description: string
     icon: typeof Shield
   }> = [
-    {
-      key: 'camera',
-      label: 'Camera',
-      description: 'Allow site to capture video from your camera',
-      icon: Camera
-    },
-    {
-      key: 'microphone',
-      label: 'Microphone',
-      description: 'Allow site to capture audio from your microphone',
-      icon: Mic
-    },
-    {
-      key: 'notifications',
-      label: 'Notifications',
-      description: 'Allow site to send desktop notifications',
-      icon: Bell
-    },
-    {
-      key: 'screenShare',
-      label: 'Screen Sharing',
-      description: 'Allow site to prompt to share windows or screens',
-      icon: Monitor
-    },
-    {
-      key: 'clipboard',
-      label: 'Clipboard Access',
-      description: 'Allow site to read from and write to system clipboard',
-      icon: Clipboard
-    },
-    {
-      key: 'geolocation',
-      label: 'Geolocation',
-      description: 'Allow site to access your physical location',
-      icon: MapPin
-    },
-    {
-      key: 'downloads',
-      label: 'Downloads',
-      description: 'Allow site to trigger automatic file downloads',
-      icon: Download
-    }
-  ]
+      {
+        key: 'camera',
+        label: 'Camera',
+        description: 'Allow site to capture video from your camera',
+        icon: Camera
+      },
+      {
+        key: 'microphone',
+        label: 'Microphone',
+        description: 'Allow site to capture audio from your microphone',
+        icon: Mic
+      },
+      {
+        key: 'notifications',
+        label: 'Notifications',
+        description: 'Allow site to send desktop notifications',
+        icon: Bell
+      },
+      {
+        key: 'screenShare',
+        label: 'Screen Sharing',
+        description: 'Allow site to prompt to share windows or screens',
+        icon: Monitor
+      },
+      {
+        key: 'clipboard',
+        label: 'Clipboard Access',
+        description: 'Allow site to read from and write to system clipboard',
+        icon: Clipboard
+      },
+      {
+        key: 'geolocation',
+        label: 'Geolocation',
+        description: 'Allow site to access your physical location',
+        icon: MapPin
+      },
+      {
+        key: 'downloads',
+        label: 'Downloads',
+        description: 'Allow site to trigger automatic file downloads',
+        icon: Download
+      }
+    ]
 
   return (
     <div
@@ -1501,49 +1535,49 @@ function GlobalPermissionsDialog({
     description: string
     icon: typeof ShieldCheck
   }> = [
-    {
-      key: 'camera',
-      label: 'Camera',
-      description: 'Default camera access for new accounts',
-      icon: Camera
-    },
-    {
-      key: 'microphone',
-      label: 'Microphone',
-      description: 'Default microphone access for new accounts',
-      icon: Mic
-    },
-    {
-      key: 'notifications',
-      label: 'Notifications',
-      description: 'Default notification permission for new accounts',
-      icon: Bell
-    },
-    {
-      key: 'screenShare',
-      label: 'Screen Sharing',
-      description: 'Default screen sharing permission for new accounts',
-      icon: Monitor
-    },
-    {
-      key: 'clipboard',
-      label: 'Clipboard Access',
-      description: 'Default clipboard access for new accounts',
-      icon: Clipboard
-    },
-    {
-      key: 'geolocation',
-      label: 'Geolocation',
-      description: 'Default physical location permission for new accounts',
-      icon: MapPin
-    },
-    {
-      key: 'downloads',
-      label: 'Downloads',
-      description: 'Default file download permission for new accounts',
-      icon: Download
-    }
-  ]
+      {
+        key: 'camera',
+        label: 'Camera',
+        description: 'Default camera access for new accounts',
+        icon: Camera
+      },
+      {
+        key: 'microphone',
+        label: 'Microphone',
+        description: 'Default microphone access for new accounts',
+        icon: Mic
+      },
+      {
+        key: 'notifications',
+        label: 'Notifications',
+        description: 'Default notification permission for new accounts',
+        icon: Bell
+      },
+      {
+        key: 'screenShare',
+        label: 'Screen Sharing',
+        description: 'Default screen sharing permission for new accounts',
+        icon: Monitor
+      },
+      {
+        key: 'clipboard',
+        label: 'Clipboard Access',
+        description: 'Default clipboard access for new accounts',
+        icon: Clipboard
+      },
+      {
+        key: 'geolocation',
+        label: 'Geolocation',
+        description: 'Default physical location permission for new accounts',
+        icon: MapPin
+      },
+      {
+        key: 'downloads',
+        label: 'Downloads',
+        description: 'Default file download permission for new accounts',
+        icon: Download
+      }
+    ]
 
   return (
     <div

@@ -13,6 +13,7 @@ import { HubNotifications } from './notifications'
 import { HubTray } from './tray'
 import type { DownloadUpdate, HubState } from './types'
 import { ViewManager } from './view-manager'
+import { PasswordManager } from './password-manager'
 
 const updaterModule = createRequire(import.meta.url)('electron-updater') as typeof import('electron-updater')
 const { autoUpdater } = updaterModule
@@ -147,6 +148,7 @@ if (!gotLock) {
     viewManager.resizeToContent(contentWidth, contentHeight)
     tray = new HubTray(mainWindow, accountManager, viewManager, publishState)
     tray.create()
+    const passwordManager = new PasswordManager()
     registerIpc(
       mainWindow,
       accountManager,
@@ -163,7 +165,8 @@ if (!gotLock) {
       },
       rendererUrl,
       process.env.VITE_GOOGLE_OAUTH_CLIENT_ID ?? '',
-      process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? ''
+      process.env.GOOGLE_OAUTH_CLIENT_SECRET ?? '',
+      passwordManager
     )
     publishState()
     publishNotifications()

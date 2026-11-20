@@ -132,8 +132,9 @@ export class ViewManager {
         this.accounts.setActiveWorkspace(account.workspaceId)
       }
     }
+    this.sidebarOverlayActive = false
     for (const [accountId, view] of this.views) {
-      view.setVisible(accountId === id && !this.sidebarOverlayActive)
+      view.setVisible(accountId === id)
     }
     this.activeId = id
     this.accounts.setActive(id)

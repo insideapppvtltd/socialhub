@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, NewAccount, Preferences, Workspace } from '../main/types'
+import type { CredentialSummary } from '../main/password-manager'
+
+export type { CredentialSummary }
 
 export interface SocialHubAPI {
   getState(): Promise<HubState>
@@ -33,6 +36,12 @@ export interface SocialHubAPI {
   onNotifications(callback: (notifications: HubNotificationItem[]) => void): () => void
   getActiveCallStatus(): Promise<{ hasActiveCall: boolean; count: number }>
   onActiveCallStatus(callback: (status: { hasActiveCall: boolean; count: number }) => void): () => void
+  listCredentials(): Promise<CredentialSummary[]>
+  revealPassword(id: string): Promise<string>
+  copyPassword(id: string): Promise<boolean>
+  updateCredential(payload: { id: string; username: string; password?: string }): Promise<unknown>
+  deleteCredential(id: string): Promise<boolean>
+  onPasswordsUpdated(callback: () => void): () => void
 }
 
 const api: SocialHubAPI = {
@@ -66,7 +75,13 @@ const api: SocialHubAPI = {
   clearNotifications: () => ipcRenderer.invoke('hub:clear-notifications'),
   onNotifications: (callback) => subscribe('hub:notifications', callback),
   getActiveCallStatus: () => ipcRenderer.invoke('hub:get-active-call-status'),
-  onActiveCallStatus: (callback) => subscribe('hub:active-call-status', callback)
+  onActiveCallStatus: (callback) => subscribe('hub:active-call-status', callback),
+  listCredentials: () => ipcRenderer.invoke('hub:passwords-list'),
+  revealPassword: (id) => ipcRenderer.invoke('hub:passwords-get-password', id),
+  copyPassword: (id) => ipcRenderer.invoke('hub:passwords-copy-password', id),
+  updateCredential: (payload) => ipcRenderer.invoke('hub:passwords-update', payload),
+  deleteCredential: (id) => ipcRenderer.invoke('hub:passwords-delete', id),
+  onPasswordsUpdated: (callback) => subscribe('hub:passwords-updated', callback)
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {
