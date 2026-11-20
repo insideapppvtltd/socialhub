@@ -286,6 +286,36 @@ export function registerIpc(
     assertName(name)
     return views.rename(id, name)
   })
+  ipcMain.handle('hub:update-account', (event, id: unknown, updates: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+      throw new Error('Updates must be an object.')
+    }
+    const data = updates as { name?: unknown; url?: unknown }
+    const patch: { name?: string; url?: string } = {}
+
+    if (data.name !== undefined) {
+      if (typeof data.name !== 'string' || !data.name.trim()) {
+        throw new Error('Account name cannot be empty.')
+      }
+      patch.name = data.name.trim().slice(0, 40)
+    }
+
+    if (data.url !== undefined) {
+      if (typeof data.url !== 'string' || !data.url.trim()) {
+        throw new Error('Website URL cannot be empty.')
+      }
+      if (!isHttpsUrl(data.url.trim())) {
+        throw new Error('Enter a valid HTTPS website URL.')
+      }
+      patch.url = new URL(data.url.trim()).href
+    }
+
+    const updated = views.updateAccount(id, patch)
+    window.webContents.send('hub:state', getState())
+    return updated
+  })
   ipcMain.handle('hub:set-muted', (event, id: unknown, muted: unknown) => {
     guard(event)
     assertAccountId(id)

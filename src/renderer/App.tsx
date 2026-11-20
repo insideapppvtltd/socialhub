@@ -46,6 +46,7 @@ type AccountMenu = { id: string; x: number; y: number } | null
 type EditorDialog =
   | { kind: 'add' }
   | { kind: 'rename'; account: Account }
+  | { kind: 'edit'; account: Account }
   | { kind: 'confirm-remove'; account: Account }
   | { kind: 'confirm-cache'; account: Account }
   | { kind: 'confirm-logout' }
@@ -135,6 +136,16 @@ export default function App() {
       showToast(error instanceof Error ? error.message : 'Could not add account.')
     }
   }, [dialog, showToast])
+
+  const submitEditAccount = useCallback(async (accountId: string, name: string, url: string) => {
+    try {
+      await window.socialHub.updateAccount(accountId, { name, url })
+      setDialog(null)
+      showToast('Account updated.')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not update account.')
+    }
+  }, [showToast])
 
   const submitAddWorkspace = useCallback(async (name: string) => {
     try {
@@ -874,6 +885,10 @@ export default function App() {
           account={state.accounts.find((account) => account.id === menu.id)}
           x={menu.x}
           y={menu.y}
+          onEdit={(account) => {
+            setMenu(null)
+            setDialog({ kind: 'edit', account })
+          }}
           onRename={(account) => {
             setMenu(null)
             setDialog({ kind: 'rename', account })
@@ -903,6 +918,7 @@ export default function App() {
           activeWorkspaceId={currentWorkspaceId ?? null}
           onClose={() => setDialog(null)}
           onSubmitAccount={(name, appId, url, workspaceId) => void submitAccount(name, appId, url, workspaceId)}
+          onSubmitEditAccount={(accountId, name, url) => void submitEditAccount(accountId, name, url)}
           onSubmitAddWorkspace={(name) => void submitAddWorkspace(name)}
           onSubmitRenameWorkspace={(id, name) => void submitRenameWorkspace(id, name)}
           onSubmitPermissions={async (permissions) => {
@@ -952,6 +968,7 @@ function HubDialog({
   globalDefaults,
   onClose,
   onSubmitAccount,
+  onSubmitEditAccount,
   onSubmitAddWorkspace,
   onSubmitRenameWorkspace,
   onSubmitPermissions,
@@ -966,6 +983,7 @@ function HubDialog({
   globalDefaults: AccountPermissions
   onClose: () => void
   onSubmitAccount: (name: string, appId?: string, url?: string, workspaceId?: string) => void
+  onSubmitEditAccount: (accountId: string, name: string, url: string) => void
   onSubmitAddWorkspace: (name: string) => void
   onSubmitRenameWorkspace: (id: string, name: string) => void
   onSubmitPermissions: (permissions: AccountPermissions) => Promise<void>
@@ -994,6 +1012,53 @@ function HubDialog({
         onClose={onClose}
         onSave={onSubmitPermissions}
       />
+    )
+  }
+
+  if (dialog.kind === 'edit') {
+    return (
+      <div className="dialog-backdrop" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}>
+        <form className="hub-dialog" onSubmit={(event) => {
+          event.preventDefault()
+          const formData = new FormData(event.currentTarget)
+          const name = formData.get('account-name')
+          const url = formData.get('website-url')
+          if (typeof name !== 'string' || !name.trim()) return
+          if (typeof url !== 'string' || !url.trim()) return
+          onSubmitEditAccount(dialog.account.id, name.trim(), url.trim())
+        }}>
+          <h2>Edit account</h2>
+          <p>Update the name or website URL for this account.</p>
+
+          <label htmlFor="edit-account-name">Account name</label>
+          <input
+            id="edit-account-name"
+            name="account-name"
+            maxLength={40}
+            required
+            autoFocus
+            defaultValue={dialog.account.name}
+            placeholder="e.g. Personal"
+          />
+
+          <label htmlFor="edit-website-url">Website URL</label>
+          <input
+            id="edit-website-url"
+            name="website-url"
+            type="url"
+            required
+            defaultValue={dialog.account.url}
+            placeholder="https://example.com"
+          />
+
+          <div className="dialog-actions">
+            <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
+            <button type="submit" className="dialog-primary">Save changes</button>
+          </div>
+        </form>
+      </div>
     )
   }
 
@@ -1262,6 +1327,7 @@ function AccountContextMenu({
   account,
   x,
   y,
+  onEdit,
   onRename,
   onMute,
   onReload,
@@ -1272,6 +1338,7 @@ function AccountContextMenu({
   account?: Account
   x: number
   y: number
+  onEdit: (account: Account) => void
   onRename: (account: Account) => void
   onMute: (account: Account) => void
   onReload: (account: Account) => void
@@ -1282,6 +1349,7 @@ function AccountContextMenu({
   if (!account) return null
   return (
     <div className="context-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
+      <button onClick={() => onEdit(account)}><Pencil size={14} />Edit account</button>
       <button onClick={() => onRename(account)}>Rename account</button>
       <button onClick={() => onMute(account)}>{account.muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{account.muted ? 'Unmute' : 'Mute'}</button>
       <button onClick={() => onReload(account)}><RefreshCw size={14} />Reload</button>

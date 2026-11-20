@@ -227,6 +227,37 @@ export class ViewManager {
     return account
   }
 
+  updateAccount(id: string, updates: { name?: string; url?: string }): Account {
+    const existing = this.accounts.get(id)
+    if (!existing) throw new Error('Account not found.')
+
+    const previousUrl = existing.url
+    const updatedStored = this.accounts.updateAccount(id, updates)
+    const account: Account = { ...updatedStored, unread: this.unread.get(id) ?? 0 }
+
+    if (updates.name) {
+      this.updateAccountLabel(id, account.name)
+    }
+
+    const view = this.views.get(id)
+    if (view && !view.webContents.isDestroyed() && updates.url) {
+      try {
+        const oldParsed = new URL(previousUrl)
+        const newParsed = new URL(account.url)
+        if (oldParsed.href !== newParsed.href) {
+          void view.webContents.loadURL(account.url)
+        }
+      } catch {
+        if (previousUrl !== account.url) {
+          void view.webContents.loadURL(account.url)
+        }
+      }
+    }
+
+    this.onStateChanged()
+    return account
+  }
+
   setMuted(id: string, muted: boolean): Account {
     const updated = this.accounts.setMuted(id, muted)
     if (muted) {

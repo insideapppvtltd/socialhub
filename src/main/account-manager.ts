@@ -386,6 +386,35 @@ export class AccountManager {
     return this.update(id, { name: cleanName })
   }
 
+  updateAccount(id: string, updates: { name?: string; url?: string }): StoredAccount {
+    const existing = this.get(id)
+    if (!existing) throw new Error('Account not found.')
+
+    const patch: Partial<StoredAccount> = {}
+
+    if (updates.name !== undefined) {
+      const cleanName = updates.name.trim().slice(0, 40)
+      if (!cleanName) throw new Error('Account name cannot be empty.')
+      patch.name = cleanName
+    }
+
+    if (updates.url !== undefined) {
+      const cleanUrl = updates.url.trim()
+      if (!cleanUrl) throw new Error('Website URL cannot be empty.')
+      try {
+        const parsed = new URL(cleanUrl)
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+          throw new Error('Enter a valid HTTPS website URL.')
+        }
+        patch.url = parsed.href
+      } catch {
+        throw new Error('Enter a valid HTTPS website URL.')
+      }
+    }
+
+    return this.update(id, patch)
+  }
+
   setMuted(id: string, muted: boolean): StoredAccount {
     return this.update(id, { muted })
   }

@@ -11,6 +11,7 @@ export interface SocialHubAPI {
   addAccount(account: NewAccount): Promise<Account>
   activateAccount(id: string): Promise<void>
   renameAccount(id: string, name: string): Promise<Account>
+  updateAccount(id: string, updates: { name?: string; url?: string }): Promise<Account>
   setMuted(id: string, muted: boolean): Promise<Account>
   setAccountPermissions(id: string, permissions: Partial<AccountPermissions>): Promise<Account>
   getGlobalDefaultPermissions(): Promise<AccountPermissions>
@@ -51,6 +52,7 @@ const api: SocialHubAPI = {
   addAccount: (account) => ipcRenderer.invoke('hub:add-account', account),
   activateAccount: (id) => ipcRenderer.invoke('hub:activate-account', id),
   renameAccount: (id, name) => ipcRenderer.invoke('hub:rename-account', id, name),
+  updateAccount: (id, updates) => ipcRenderer.invoke('hub:update-account', id, updates),
   setMuted: (id, muted) => ipcRenderer.invoke('hub:set-muted', id, muted),
   setAccountPermissions: (id, permissions) => ipcRenderer.invoke('hub:set-account-permissions', id, permissions),
   getGlobalDefaultPermissions: () => ipcRenderer.invoke('hub:get-global-default-permissions'),
