@@ -45,6 +45,7 @@ import {
   syncWorkspaceCreation,
   syncWorkspaceDeletion,
   syncWorkspaceLastVisit,
+  syncWorkspaceOnSwitch,
   syncWorkspaceMetadataUpdate,
   syncAccountAddition,
   syncAccountUpdate,
@@ -293,6 +294,16 @@ export default function App() {
       if (result.remoteWorkspaces && result.remoteWorkspaces.length > 0) {
         const remoteIds = result.remoteWorkspaces.map((w) => w.ws_id)
         await window.socialHub.claimWorkspaces(user.uid, remoteIds)
+
+        // 3. Load workspace password records into local credentials (one-time fetch on auth)
+        for (const rw of result.remoteWorkspaces) {
+          if (Array.isArray(rw.ws_passwords) && rw.ws_passwords.length > 0) {
+            await window.socialHub.syncWorkspaceCredentialsWithCloud(rw.ws_id, rw.ws_passwords).catch((err) => {
+              console.warn(`[AUTH][PASSWORDS] Could not sync credentials for workspace ${rw.ws_id}:`, err)
+            })
+          }
+        }
+
         const updatedState = await window.socialHub.getState()
         setState(updatedState)
       }
@@ -301,6 +312,17 @@ export default function App() {
       console.error(`[AUTH][SYNC] Synchronization pipeline failed for UID: ${user.uid}:`, error)
     }
   }, [])
+
+  const handleManualRefresh = useCallback(async () => {
+    if (!firebaseUser) return
+    try {
+      showToast('Refreshing workspaces from cloud...')
+      await syncFirebaseData(firebaseUser)
+      showToast('Cloud workspaces refreshed.')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not refresh.')
+    }
+  }, [firebaseUser, syncFirebaseData, showToast])
 
   useEffect(() => {
     try {
@@ -385,7 +407,11 @@ export default function App() {
         if (targetWorkspace) {
           await window.socialHub.activateWorkspace(targetWorkspace.id)
           if (firebaseUser) {
-            void syncWorkspaceLastVisit(firebaseUser, targetWorkspace.id, undefined, true)
+            void syncWorkspaceOnSwitch(firebaseUser, targetWorkspace.id).then((docData) => {
+              if (docData && Array.isArray(docData.ws_passwords) && docData.ws_passwords.length > 0) {
+                void window.socialHub.syncWorkspaceCredentialsWithCloud(targetWorkspace.id, docData.ws_passwords)
+              }
+            })
           }
         }
       }
@@ -541,16 +567,27 @@ export default function App() {
               <div className="workspace-menu" role="menu">
                 <div className="workspace-menu-header">
                   <span>WORKSPACES</span>
-                  <button
-                    className="workspace-add-mini"
-                    title="Add Workspace"
-                    onClick={() => {
-                      setWorkspaceMenuOpen(false)
-                      setDialog({ kind: 'add-workspace' })
-                    }}
-                  >
-                    <Plus size={13} />
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {firebaseUser && (
+                      <button
+                        className="workspace-add-mini"
+                        title="Refresh Workspaces from Cloud"
+                        onClick={handleManualRefresh}
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    )}
+                    <button
+                      className="workspace-add-mini"
+                      title="Add Workspace"
+                      onClick={() => {
+                        setWorkspaceMenuOpen(false)
+                        setDialog({ kind: 'add-workspace' })
+                      }}
+                    >
+                      <Plus size={13} />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="workspace-items-list">
@@ -571,7 +608,11 @@ export default function App() {
                           setPasswordsOpen(false)
                           setNotificationsOpen(false)
                           if (firebaseUser) {
-                            void syncWorkspaceLastVisit(firebaseUser, ws.id, undefined, true)
+                            void syncWorkspaceOnSwitch(firebaseUser, ws.id).then((docData) => {
+                              if (docData && Array.isArray(docData.ws_passwords) && docData.ws_passwords.length > 0) {
+                                void window.socialHub.syncWorkspaceCredentialsWithCloud(ws.id, docData.ws_passwords)
+                              }
+                            })
                           }
                           void window.socialHub.activateWorkspace(ws.id).catch((err: unknown) => {
                             showToast(err instanceof Error ? err.message : 'Could not switch workspace.')

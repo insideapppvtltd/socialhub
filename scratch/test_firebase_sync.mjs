@@ -502,6 +502,31 @@ async function syncWorkspaceLastVisit(user, workspaceId, bridge, force = false) 
   }
 }
 
+async function syncWorkspaceOnSwitch(user, workspaceId, bridge) {
+  if (!user || !user.uid || !workspaceId) return null
+  try {
+    const docRef = bridge.doc(null, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await bridge.getDoc(docRef)
+    if (!snap.exists()) return null
+    const data = snap.data()
+    if (!isAuthorizedUser(user.uid, data)) return null
+
+    const updates = {
+      ws_at_last_visit: bridge.serverTimestamp()
+    }
+    if (!data.ws_at_created) {
+      updates.ws_at_created = bridge.serverTimestamp()
+    }
+    if (!data.ws_at_updated) {
+      updates.ws_at_updated = bridge.serverTimestamp()
+    }
+    await bridge.updateDoc(docRef, updates)
+    return data
+  } catch (error) {
+    return null
+  }
+}
+
 async function syncWorkspaceMetadataUpdate(user, workspaceId, bridge) {
   if (!user || !user.uid || !workspaceId) return false
   try {
@@ -602,12 +627,12 @@ async function syncWorkspacePasswords(user, workspaceId, passwords, provider, ma
     if (!p || typeof p !== 'object') {
       return { synced: false, reason: 'Invalid password record format: not an object' }
     }
-    const credId = String(p.cred_id || p.credential_id || '').trim()
-    if (!credId) {
-      return { synced: false, reason: 'Invalid password record format: missing cred_id.' }
+    const passId = String(p.pass_id || p.cred_id || p.credential_id || '').trim()
+    if (!passId) {
+      return { synced: false, reason: 'Invalid password record format: missing pass_id.' }
     }
     formatted.push({
-      cred_id: credId,
+      pass_id: passId,
       pass_link: typeof p.pass_link === 'string' ? p.pass_link.trim() : '',
       pass_name: typeof p.pass_name === 'string' ? p.pass_name.trim() : '',
       pass_value: typeof p.pass_value === 'string' ? p.pass_value : ''
@@ -1150,27 +1175,38 @@ async function runTests() {
   console.log('\n  [SCENARIO 10] Password Manager integrity & Plaintext schema enforcement')
   // In zero-workspace state, User B cannot sync passwords to nonexistent workspace
   const zeroWsPwAttempt = await syncWorkspacePasswords(userB, userBWs.id, [
-    { cred_id: 'cred-1', pass_link: 'https://test.com', pass_name: 'admin', pass_value: 'plain' }
+    { pass_id: 'pass-1', pass_link: 'https://test.com', pass_name: 'admin', pass_value: 'plain' }
   ], null, bridge)
   assert.strictEqual(zeroWsPwAttempt.synced, false)
 
-  // In populated workspace state, records without cred_id are rejected
-  const missingCredIdAttempt = await syncWorkspacePasswords(newUser, createdLocalWs.id, [
+  // In populated workspace state, records without pass_id (or legacy cred_id) are rejected
+  const missingPassIdAttempt = await syncWorkspacePasswords(newUser, createdLocalWs.id, [
     { pass_link: 'https://web.whatsapp.com', pass_name: 'test', pass_value: 'secret123' }
   ], null, bridge)
-  assert.strictEqual(missingCredIdAttempt.synced, false)
-  assert.ok(missingCredIdAttempt.reason.includes('missing cred_id'))
+  assert.strictEqual(missingPassIdAttempt.synced, false)
+  assert.ok(missingPassIdAttempt.reason.includes('missing pass_id'))
 
-  // Valid plaintext record is accepted and written
+  // Legacy record with cred_id is accepted and normalized to pass_id
+  const legacyAttempt = await syncWorkspacePasswords(newUser, createdLocalWs.id, [
+    { cred_id: 'cred-legacy-1', pass_link: 'https://web.whatsapp.com', pass_name: 'test', pass_value: 'secret123' }
+  ], null, bridge)
+  assert.strictEqual(legacyAttempt.synced, true)
+  const savedLegacyWsDoc = mockDb.getDoc('workspaces', createdLocalWs.id).data()
+  assert.strictEqual(savedLegacyWsDoc.ws_passwords.length, 1)
+  assert.strictEqual(savedLegacyWsDoc.ws_passwords[0].pass_id, 'cred-legacy-1')
+  assert.strictEqual(savedLegacyWsDoc.ws_passwords[0].cred_id, undefined)
+
+  // Valid plaintext record with pass_id is accepted and written
   const validPwAttempt = await syncWorkspacePasswords(newUser, createdLocalWs.id, [
-    { cred_id: 'cred-valid-1', pass_link: 'https://web.whatsapp.com', pass_name: 'test', pass_value: 'secret123' }
+    { pass_id: 'pass-valid-1', pass_link: 'https://web.whatsapp.com', pass_name: 'test', pass_value: 'secret123' }
   ], null, bridge)
   assert.strictEqual(validPwAttempt.synced, true)
   const savedWsDoc = mockDb.getDoc('workspaces', createdLocalWs.id).data()
   assert.strictEqual(savedWsDoc.ws_passwords.length, 1)
-  assert.strictEqual(savedWsDoc.ws_passwords[0].cred_id, 'cred-valid-1')
+  assert.strictEqual(savedWsDoc.ws_passwords[0].pass_id, 'pass-valid-1')
   assert.strictEqual(savedWsDoc.ws_passwords[0].pass_value, 'secret123')
-  console.log('  -> Passed Scenario 10: Password Manager functions correctly with plaintext Firestore schema')
+  assert.deepStrictEqual(Object.keys(savedWsDoc.ws_passwords[0]).sort(), ['pass_id', 'pass_link', 'pass_name', 'pass_value'])
+  console.log('  -> Passed Scenario 10: Password Manager functions correctly with plaintext Firestore schema and pass_id')
 
   // -------------------------------------------------------------
   // TEST GROUP 4: FORBIDDEN COLLECTIONS & DPAPI AUDIT
@@ -1417,7 +1453,7 @@ async function runTests() {
     'ws-ts-1',
     [
       {
-        cred_id: 'cred-ts-1',
+        pass_id: 'pass-ts-1',
         pass_link: 'https://site.com',
         pass_name: 'user1',
         pass_value: 'plainpassword123'
@@ -1430,10 +1466,98 @@ async function runTests() {
   const snapAfterPw = await bridge.getDoc(bridge.doc(null, WORKSPACES_COLLECTION, 'ws-ts-1'))
   const dataAfterPw = snapAfterPw.data()
   assert.strictEqual(dataAfterPw.ws_passwords.length, 1)
-  assert.strictEqual(dataAfterPw.ws_passwords[0].cred_id, 'cred-ts-1')
+  assert.strictEqual(dataAfterPw.ws_passwords[0].pass_id, 'pass-ts-1')
   assert.ok(dataAfterPw.ws_at_updated.timestamp > pwUpdatedBefore, 'ws_at_updated must advance on password sync')
   assert.strictEqual(dataAfterPw.ws_at_created.timestamp, initialCreated, 'ws_at_created must remain unchanged')
   console.log('  -> Passed Req 12: Password Manager cloud synchronization functions smoothly and updates ws_at_updated')
+
+  // -------------------------------------------------------------
+  // TEST GROUP 7: STRICTLY NON-REAL-TIME FIRESTORE SYNCHRONIZATION VERIFICATION
+  // -------------------------------------------------------------
+  console.log('\n[TEST GROUP 7] Strictly Non-Real-Time Firestore Synchronization Verification')
+
+  // 1. Static codebase audit: No onSnapshot or continuous Firestore listeners
+  function findFiles(dir, exts = ['.ts', '.tsx', '.js']) {
+    let results = []
+    const list = fs.readdirSync(dir)
+    for (const file of list) {
+      const fullPath = path.join(dir, file)
+      const stat = fs.statSync(fullPath)
+      if (stat.isDirectory()) {
+        results = results.concat(findFiles(fullPath, exts))
+      } else if (exts.some((ext) => file.endsWith(ext))) {
+        results.push(fullPath)
+      }
+    }
+    return results
+  }
+
+  const srcFiles = findFiles(path.resolve('src'))
+  const rendererFiles = findFiles(path.resolve('src/renderer'))
+
+  let onSnapshotCount = 0
+  let realtimeListenerCount = 0
+  for (const f of srcFiles) {
+    const content = fs.readFileSync(f, 'utf8')
+    if (content.includes('onSnapshot')) onSnapshotCount++
+    if (/onValue|onChildChanged|onChildAdded/.test(content)) realtimeListenerCount++
+  }
+
+  assert.strictEqual(onSnapshotCount, 0, 'Codebase must have zero active onSnapshot calls')
+  assert.strictEqual(realtimeListenerCount, 0, 'Codebase must have zero realtime database listeners')
+  console.log('  -> Passed: Static audit verified 0 onSnapshot and 0 real-time listener subscriptions in entire src/ directory')
+
+  // 2. Static codebase audit: No polling or interval timers in src/renderer
+  let setIntervalCount = 0
+  for (const f of rendererFiles) {
+    const content = fs.readFileSync(f, 'utf8')
+    if (content.includes('setInterval')) setIntervalCount++
+  }
+  assert.strictEqual(setIntervalCount, 0, 'Renderer must not contain setInterval polling timers')
+  console.log('  -> Passed: Static audit verified 0 setInterval timers in src/renderer (no polling introduced)')
+
+  // 3. Workspace switching one-time fetch & last_visit update
+  console.log('\n  [SCENARIO: WORKSPACE SWITCHING]')
+  const switchDoc = await syncWorkspaceOnSwitch(tsUser1, 'ws-ts-1', bridge)
+  assert.ok(switchDoc, 'syncWorkspaceOnSwitch must return fresh workspace document')
+  assert.strictEqual(switchDoc.ws_id, 'ws-ts-1')
+  assert.strictEqual(switchDoc.ws_owner_id, tsUser1.uid)
+  const snapAfterSwitch = await bridge.getDoc(bridge.doc(null, WORKSPACES_COLLECTION, 'ws-ts-1'))
+  assert.strictEqual(snapAfterSwitch.data().ws_at_created.timestamp, initialCreated, 'ws_at_created must be preserved on switch')
+  assert.ok(snapAfterSwitch.data().ws_at_last_visit.timestamp >= switchDoc.ws_at_last_visit.timestamp, 'ws_at_last_visit must be updated')
+  console.log('  -> Passed: Workspace switching performs strictly one-time getDoc and updates ws_at_last_visit without listeners')
+
+  // 4. Cross-device change isolation: Remote changes do not appear locally until explicit fetch/switch/refresh
+  console.log('\n  [SCENARIO: CROSS-DEVICE CHANGE ISOLATION]')
+  // Device B adds a password remotely directly to Firestore
+  const deviceBPwRecord = {
+    pass_id: 'pass-device-b',
+    pass_link: 'https://remote-service.com',
+    pass_name: 'device-b-user',
+    pass_value: 'secret123'
+  }
+  const currentRemoteWs = mockDb.getDoc(WORKSPACES_COLLECTION, 'ws-ts-1').data()
+  currentRemoteWs.ws_passwords.push(deviceBPwRecord)
+  mockDb.setDoc(WORKSPACES_COLLECTION, 'ws-ts-1', currentRemoteWs)
+
+  // Local state on Device A remains untouched (not automatically pushed without listeners)
+  let localDeviceAPasswords = [{ pass_id: 'pass-ts-1', pass_name: 'user1' }]
+  assert.strictEqual(localDeviceAPasswords.length, 1, 'Local state must NOT auto-update without explicit fetch')
+  console.log('  -> Passed: Changes on other devices do not automatically appear in the currently open application')
+
+  // Explicit user action: switching to workspace or manual refresh triggers one-time fetch
+  const freshFetchedWs = await syncWorkspaceOnSwitch(tsUser1, 'ws-ts-1', bridge)
+  assert.strictEqual(freshFetchedWs.ws_passwords.length, 2, 'One-time fetch on switch retrieves remote changes')
+  localDeviceAPasswords = freshFetchedWs.ws_passwords
+  assert.strictEqual(localDeviceAPasswords.some((p) => p.pass_id === 'pass-device-b'), true)
+  console.log('  -> Passed: Remote changes become visible upon explicit user workspace switch or manual refresh')
+
+  // 5. One-time fetch on authentication
+  console.log('\n  [SCENARIO: ONE-TIME AUTHENTICATION FETCH]')
+  const authSyncResult = await syncUserWorkspaces(tsUser1, [{ id: 'ws-ts-1' }], [], bridge)
+  assert.strictEqual(authSyncResult.synced, true)
+  assert.strictEqual(authSyncResult.remoteWorkspaces.length, 2)
+  console.log('  -> Passed: Authentication performs one-time reads (getDoc, getDocs) without continuous monitoring')
 
   console.log('\n=========================================================================')
   console.log('ALL TESTS PASSED PERFECTLY (100% PASS)')

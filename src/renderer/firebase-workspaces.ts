@@ -565,16 +565,16 @@ export async function syncWorkspacePasswords(
     }
 
     const rec = p as any
-    const credId = String(rec.cred_id || rec.credential_id || '').trim()
-    if (!credId) {
+    const passId = String(rec.pass_id || rec.cred_id || rec.credential_id || '').trim()
+    if (!passId) {
       return {
         synced: false,
-        reason: 'Invalid password record format: missing cred_id.'
+        reason: 'Invalid password record format: missing pass_id.'
       }
     }
 
     formattedPasswords.push({
-      cred_id: credId,
+      pass_id: passId,
       pass_link: typeof rec.pass_link === 'string' ? rec.pass_link.trim() : '',
       pass_name: typeof rec.pass_name === 'string' ? rec.pass_name.trim() : '',
       pass_value: typeof rec.pass_value === 'string' ? rec.pass_value : ''
@@ -719,5 +719,51 @@ export async function syncWorkspaceLastVisit(
       error
     )
     return false
+  }
+}
+
+/**
+ * Performs a strictly non-real-time, one-time fetch of workspace data when switching or visiting a workspace.
+ * Reads the latest document with getDoc, updates ws_at_last_visit,
+ * and does NOT establish any continuous listeners or polling loops.
+ */
+export async function syncWorkspaceOnSwitch(
+  user: User | null,
+  workspaceId: string,
+  firestoreInstance?: Firestore
+): Promise<FirestoreWorkspaceDocument | null> {
+  if (!user || !user.uid || !workspaceId) return null
+
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) return null
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (!isAuthorizedUser(user.uid, data)) return null
+
+    const updates: Record<string, any> = {
+      ws_at_last_visit: serverTimestamp()
+    }
+    if (!data.ws_at_created) {
+      updates.ws_at_created = serverTimestamp()
+    }
+    if (!data.ws_at_updated) {
+      updates.ws_at_updated = serverTimestamp()
+    }
+    await updateDoc(docRef, updates)
+    lastVisitedWorkspaceId = workspaceId
+    lastVisitedTimestamp = Date.now()
+
+    console.log(
+      `[FIRESTORE][WORKSPACES][SWITCH] Project: ${FIREBASE_PROJECT_ID} | Workspace: ${workspaceId} | UID: ${user.uid} | One-time fetch and last visit update complete.`
+    )
+    return data
+  } catch (error) {
+    console.error(
+      `[FIRESTORE][WORKSPACES][SWITCH][ERROR] Workspace: ${workspaceId} | UID: ${user.uid}:`,
+      error
+    )
+    return null
   }
 }

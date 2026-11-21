@@ -36,10 +36,11 @@ export interface UserPasswordCryptoMetadata {
 }
 
 export interface FirestorePasswordRecord {
-  cred_id: string
+  pass_id: string
   pass_link: string
   pass_name: string
   pass_value: string
+  cred_id?: string
   credential_id?: string
 }
 
@@ -278,8 +279,7 @@ export function encryptCloudCredential(
   }
 
   return {
-    cred_id: record.id,
-    credential_id: record.id,
+    pass_id: record.id,
     pass_link: record.origin,
     pass_name: record.username,
     pass_value: JSON.stringify(envelope)
@@ -337,7 +337,7 @@ export function decryptCloudCredential(
     throw new Error('Invalid nonce or authentication tag size.')
   }
 
-  const recordId = (cloudRecord as any).credential_id || (cloudRecord as any).cred_id || ''
+  const recordId = (cloudRecord as any).pass_id || (cloudRecord as any).cred_id || (cloudRecord as any).credential_id || ''
   const aad = buildCredentialAad(workspaceId, recordId)
 
   try {
@@ -349,7 +349,8 @@ export function decryptCloudCredential(
     const payload = JSON.parse(decryptedBuf.toString('utf8')) as DecryptedCredentialPayload
 
     // Validate payload consistency
-    if (!payload.id || payload.id !== cloudRecord.credential_id) {
+    const expectedId = (cloudRecord as any).pass_id || (cloudRecord as any).credential_id || (cloudRecord as any).cred_id
+    if (!payload.id || payload.id !== expectedId) {
       throw new Error('Credential ID tampering detected.')
     }
     if (!payload.workspaceId || payload.workspaceId !== workspaceId) {
@@ -359,7 +360,7 @@ export function decryptCloudCredential(
     return payload
   } catch (error) {
     throw new Error(
-      `Failed to decrypt cloud credential ${cloudRecord.credential_id}: Authentication failed or payload tampered.`
+      `Failed to decrypt cloud credential ${recordId}: Authentication failed or payload tampered.`
     )
   }
 }

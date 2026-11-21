@@ -447,7 +447,7 @@ export class PasswordManager {
     try {
       const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
       return {
-        cred_id: loc.id,
+        pass_id: loc.id,
         pass_link: loc.origin,
         pass_name: loc.username,
         pass_value: plainPass
@@ -466,7 +466,7 @@ export class PasswordManager {
       try {
         const plain = this.encryption.decrypt(c.passwordEncrypted)
         records.push({
-          cred_id: c.id,
+          pass_id: c.id,
           pass_link: c.origin,
           pass_name: c.username,
           pass_value: plain
@@ -515,8 +515,8 @@ export class PasswordManager {
     for (const remote of remoteRecords || []) {
       if (!remote || typeof remote !== 'object') continue
 
-      const credId: string = remote.cred_id || remote.credential_id || remote.id || ''
-      if (!credId) continue
+      const passId: string = remote.pass_id || remote.cred_id || remote.credential_id || remote.id || ''
+      if (!passId) continue
 
       // Check if remote record is a legacy encrypted record
       const isLegacyEncrypted =
@@ -535,7 +535,7 @@ export class PasswordManager {
         // Strategy A: Match with local credential already stored on this machine
         const localMatch = localCredentials.find(
           (c) =>
-            c.id === credId ||
+            c.id === passId ||
             (normalizeOrigin(c.origin) === normalizeOrigin(remote.pass_link || '') &&
               c.username.toLowerCase() === (remote.pass_name || '').toLowerCase())
         )
@@ -574,19 +574,19 @@ export class PasswordManager {
         if (decryptedPlaintext !== null) {
           // Successfully migrated to plaintext
           const migrated: FirestorePasswordRecord = {
-            cred_id: credId,
+            pass_id: passId,
             pass_link: decryptedLink,
             pass_name: decryptedName,
             pass_value: decryptedPlaintext
           }
-          mergedMap.set(credId, migrated)
+          mergedMap.set(passId, migrated)
         } else {
           // Preserve un-decryptable record as-is rather than destroying it
           console.warn(
-            `[PASSWORDS][SYNC] Could not decrypt legacy remote record ${credId}; preserving record.`
+            `[PASSWORDS][SYNC] Could not decrypt legacy remote record ${passId}; preserving record.`
           )
-          mergedMap.set(credId, {
-            cred_id: credId,
+          mergedMap.set(passId, {
+            pass_id: passId,
             pass_link: remote.pass_link || '',
             pass_name: remote.pass_name || '',
             pass_value: remote.pass_value || ''
@@ -595,17 +595,17 @@ export class PasswordManager {
       } else {
         // Record is already plaintext format
         const plaintextRec: FirestorePasswordRecord = {
-          cred_id: credId,
+          pass_id: passId,
           pass_link: typeof remote.pass_link === 'string' ? remote.pass_link : '',
           pass_name: typeof remote.pass_name === 'string' ? remote.pass_name : '',
           pass_value: typeof remote.pass_value === 'string' ? remote.pass_value : ''
         }
-        mergedMap.set(credId, plaintextRec)
+        mergedMap.set(passId, plaintextRec)
 
         // If not found locally, import to local storage with safeStorage
         const localMatch = localCredentials.find(
           (c) =>
-            c.id === credId ||
+            c.id === passId ||
             (normalizeOrigin(c.origin) === normalizeOrigin(plaintextRec.pass_link) &&
               c.username.toLowerCase() === plaintextRec.pass_name.toLowerCase())
         )
@@ -618,11 +618,11 @@ export class PasswordManager {
               plaintextRec.pass_link,
               plaintextRec.pass_name,
               plaintextRec.pass_value,
-              credId
+              passId
             )
             localUpdated = true
           } catch (importErr) {
-            console.error(`[PASSWORDS][SYNC] Failed to import remote credential ${credId} locally:`, importErr)
+            console.error(`[PASSWORDS][SYNC] Failed to import remote credential ${passId} locally:`, importErr)
           }
         }
       }
@@ -637,7 +637,7 @@ export class PasswordManager {
       try {
         const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
         const cloudRecord: FirestorePasswordRecord = {
-          cred_id: loc.id,
+          pass_id: loc.id,
           pass_link: loc.origin,
           pass_name: loc.username,
           pass_value: plainPass
@@ -656,16 +656,18 @@ export class PasswordManager {
       remoteUpdated = true
     } else {
       const remoteMap = new Map<string, any>(
-        (remoteRecords || []).map((r: any) => [r.cred_id || r.credential_id || r.id, r])
+        (remoteRecords || []).map((r: any) => [r.pass_id || r.cred_id || r.credential_id || r.id, r])
       )
       for (const merged of mergedRecords) {
-        const remote = remoteMap.get(merged.cred_id)
+        const remote = remoteMap.get(merged.pass_id)
         if (
           !remote ||
           remote.pass_value !== merged.pass_value ||
           remote.pass_link !== merged.pass_link ||
           remote.pass_name !== merged.pass_name ||
-          remote.credential_id !== undefined // Legacy field present -> needs schema normalization
+          remote.pass_id === undefined || // Legacy field present -> needs schema normalization
+          remote.cred_id !== undefined ||
+          remote.credential_id !== undefined
         ) {
           remoteUpdated = true
           break

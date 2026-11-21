@@ -155,7 +155,7 @@ class TestPasswordManager {
     try {
       const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
       return {
-        cred_id: loc.id,
+        pass_id: loc.id,
         pass_link: loc.origin,
         pass_name: loc.username,
         pass_value: plainPass
@@ -172,8 +172,8 @@ class TestPasswordManager {
 
     for (const remote of remoteRecords || []) {
       if (!remote || typeof remote !== 'object') continue
-      const credId = remote.cred_id || remote.credential_id || remote.id || ''
-      if (!credId) continue
+      const passId = remote.pass_id || remote.cred_id || remote.credential_id || remote.id || ''
+      if (!passId) continue
 
       // Check if remote is legacy encrypted
       const isLegacyEncrypted =
@@ -186,22 +186,22 @@ class TestPasswordManager {
         // Attempt to decrypt using local matching credential
         const localMatch = localCredentials.find(
           (c) =>
-            c.id === credId ||
+            c.id === passId ||
             (c.origin.toLowerCase() === (remote.pass_link || '').toLowerCase() &&
               c.username.toLowerCase() === (remote.pass_name || '').toLowerCase())
         )
         if (localMatch) {
           const plainPass = this.encryption.decrypt(localMatch.passwordEncrypted)
-          mergedMap.set(credId, {
-            cred_id: credId,
+          mergedMap.set(passId, {
+            pass_id: passId,
             pass_link: localMatch.origin,
             pass_name: localMatch.username,
             pass_value: plainPass
           })
         } else {
           // Preserve as-is if un-decryptable
-          mergedMap.set(credId, {
-            cred_id: credId,
+          mergedMap.set(passId, {
+            pass_id: passId,
             pass_link: remote.pass_link || '',
             pass_name: remote.pass_name || '',
             pass_value: remote.pass_value || ''
@@ -210,16 +210,16 @@ class TestPasswordManager {
       } else {
         // Plaintext record
         const plaintextRec = {
-          cred_id: credId,
+          pass_id: passId,
           pass_link: typeof remote.pass_link === 'string' ? remote.pass_link : '',
           pass_name: typeof remote.pass_name === 'string' ? remote.pass_name : '',
           pass_value: typeof remote.pass_value === 'string' ? remote.pass_value : ''
         }
-        mergedMap.set(credId, plaintextRec)
+        mergedMap.set(passId, plaintextRec)
 
         const localMatch = localCredentials.find(
           (c) =>
-            c.id === credId ||
+            c.id === passId ||
             (c.origin.toLowerCase() === plaintextRec.pass_link.toLowerCase() &&
               c.username.toLowerCase() === plaintextRec.pass_name.toLowerCase())
         )
@@ -230,7 +230,7 @@ class TestPasswordManager {
             plaintextRec.pass_link,
             plaintextRec.pass_name,
             plaintextRec.pass_value,
-            credId
+            passId
           )
           localUpdated = true
         }
@@ -243,7 +243,7 @@ class TestPasswordManager {
       try {
         const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
         mergedMap.set(loc.id, {
-          cred_id: loc.id,
+          pass_id: loc.id,
           pass_link: loc.origin,
           pass_name: loc.username,
           pass_value: plainPass
@@ -259,14 +259,16 @@ class TestPasswordManager {
     if (mergedRecords.length !== (remoteRecords || []).length) {
       remoteUpdated = true
     } else {
-      const remoteMap = new Map((remoteRecords || []).map((r) => [r.cred_id || r.credential_id || r.id, r]))
+      const remoteMap = new Map((remoteRecords || []).map((r) => [r.pass_id || r.cred_id || r.credential_id || r.id, r]))
       for (const merged of mergedRecords) {
-        const remote = remoteMap.get(merged.cred_id)
+        const remote = remoteMap.get(merged.pass_id)
         if (
           !remote ||
           remote.pass_value !== merged.pass_value ||
           remote.pass_link !== merged.pass_link ||
           remote.pass_name !== merged.pass_name ||
+          remote.pass_id === undefined ||
+          remote.cred_id !== undefined ||
           remote.credential_id !== undefined
         ) {
           remoteUpdated = true
@@ -300,19 +302,19 @@ async function runAllTests() {
 
   // 2. Format for cloud: exact plaintext fields
   const cloudFmt = pm1.formatCredentialForCloud(cred1.id)
-  assert.deepStrictEqual(Object.keys(cloudFmt).sort(), ['cred_id', 'pass_link', 'pass_name', 'pass_value'])
-  assert.strictEqual(cloudFmt.cred_id, cred1.id)
+  assert.deepStrictEqual(Object.keys(cloudFmt).sort(), ['pass_id', 'pass_link', 'pass_name', 'pass_value'])
+  assert.strictEqual(cloudFmt.pass_id, cred1.id)
   assert.strictEqual(cloudFmt.pass_link, 'https://github.com')
   assert.strictEqual(cloudFmt.pass_name, 'octocat')
   assert.strictEqual(cloudFmt.pass_value, 'OctoPass#2026')
-  console.log('  -> Passed: Cloud record format strictly adheres to { cred_id, pass_link, pass_name, pass_value }')
+  console.log('  -> Passed: Cloud record format strictly adheres to { pass_id, pass_link, pass_name, pass_value }')
 
   // 3. Cloud synchronization without master password
   assert.strictEqual(pm1.isCloudUnlocked(), true)
   const sync1 = pm1.syncWorkspaceCredentialsWithCloud('ws-1', [])
   assert.strictEqual(sync1.remoteUpdated, true)
   assert.strictEqual(sync1.mergedRecords.length, 1)
-  assert.strictEqual(sync1.mergedRecords[0].cred_id, cred1.id)
+  assert.strictEqual(sync1.mergedRecords[0].pass_id, cred1.id)
   assert.strictEqual(sync1.mergedRecords[0].pass_value, 'OctoPass#2026')
   console.log('  -> Passed: Cloud sync runs directly without master password')
 
@@ -360,8 +362,8 @@ async function runAllTests() {
   const wsAlphaDoc = firestoreDb.getWorkspace('ws-alpha')
   assert.strictEqual(wsAlphaDoc.ws_passwords.length, 1)
   const savedCloudRec = wsAlphaDoc.ws_passwords[0]
-  assert.deepStrictEqual(Object.keys(savedCloudRec).sort(), ['cred_id', 'pass_link', 'pass_name', 'pass_value'])
-  assert.strictEqual(savedCloudRec.cred_id, credA1.id)
+  assert.deepStrictEqual(Object.keys(savedCloudRec).sort(), ['pass_id', 'pass_link', 'pass_name', 'pass_value'])
+  assert.strictEqual(savedCloudRec.pass_id, credA1.id)
   assert.strictEqual(savedCloudRec.pass_link, 'https://twitter.com')
   assert.strictEqual(savedCloudRec.pass_name, 'elon')
   assert.strictEqual(savedCloudRec.pass_value, 'Mars2030!')
@@ -390,7 +392,7 @@ async function runAllTests() {
   // SCENARIO 5: Delete a credential and verify Firestore reflects the deletion
   console.log('  [SCENARIO 5] Delete credential and verify Firestore reflects deletion')
   pmA.deleteCredential(credA1.id)
-  const wsAlphaFiltered = firestoreDb.getWorkspace('ws-alpha').ws_passwords.filter((p) => p.cred_id !== credA1.id)
+  const wsAlphaFiltered = firestoreDb.getWorkspace('ws-alpha').ws_passwords.filter((p) => (p.pass_id || p.cred_id) !== credA1.id)
   firestoreDb.updateWorkspace('ws-alpha', { ws_passwords: wsAlphaFiltered })
   assert.strictEqual(firestoreDb.getWorkspace('ws-alpha').ws_passwords.length, 0)
   console.log('  -> Scenario 5 Passed: Credential deletion cleanly reflected in Firestore')
@@ -504,8 +506,24 @@ async function runAllTests() {
   const migratedItem = migrationResult.mergedRecords.find((r) => r.pass_link === 'https://legacy-site.org')
   assert.ok(migratedItem, 'Legacy record must be present in merged set')
   assert.strictEqual(migratedItem.pass_value, 'DecryptedPlainPass#123', 'Legacy ciphertext must be migrated to plaintext')
-  assert.strictEqual(migratedItem.cred_id, 'legacy-cred-999', 'Normalized cred_id')
+  assert.strictEqual(migratedItem.pass_id, 'legacy-cred-999', 'Normalized pass_id')
   console.log('  -> Scenario 12 Passed: Existing credentials intact; legacy records cleanly migrated to plaintext')
+
+  // SCENARIO 13: Backward compatibility with legacy cred_id records in Firestore
+  console.log('  [SCENARIO 13] Legacy cred_id records are read and normalized to pass_id')
+  const legacyCredIdRecord = {
+    cred_id: 'legacy-cred-alpha',
+    pass_link: 'https://legacy-alpha.com',
+    pass_name: 'alpha_user',
+    pass_value: 'plainAlphaPass123'
+  }
+  const syncLegacyRes = pmA.syncWorkspaceCredentialsWithCloud('ws-legacy-test', [legacyCredIdRecord])
+  assert.strictEqual(syncLegacyRes.mergedRecords.length, 1)
+  assert.strictEqual(syncLegacyRes.mergedRecords[0].pass_id, 'legacy-cred-alpha')
+  assert.strictEqual(syncLegacyRes.mergedRecords[0].cred_id, undefined)
+  assert.deepStrictEqual(Object.keys(syncLegacyRes.mergedRecords[0]).sort(), ['pass_id', 'pass_link', 'pass_name', 'pass_value'])
+  assert.strictEqual(syncLegacyRes.remoteUpdated, true, 'Remote must be marked updated to normalize schema')
+  console.log('  -> Scenario 13 Passed: Legacy cred_id record successfully normalized to pass_id without data loss')
 
   console.log('\n[TEST GROUP 3] Firestore Security Rules Evaluation')
 
@@ -521,6 +539,13 @@ async function runAllTests() {
   assert.ok(rulesContent.includes("!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list"), 'ws_passwords list validated')
 
   console.log('  -> Passed: Firestore security rules verified against specification')
+
+  console.log('\n[TEST GROUP 4] Non-Real-Time Password Synchronization Verification')
+  const pmContent = fs.readFileSync(path.resolve('src/renderer/PasswordManager.tsx'), 'utf8')
+  assert.ok(!pmContent.includes('onSnapshot'), 'PasswordManager.tsx must not contain onSnapshot')
+  assert.ok(!pmContent.includes('setInterval'), 'PasswordManager.tsx must not contain setInterval polling')
+  assert.ok(pmContent.includes('runCloudSync(true)'), 'PasswordManager.tsx supports on-demand one-time manual sync')
+  console.log('  -> Passed: PasswordManager verified strictly non-real-time (zero onSnapshot, zero setInterval polling)')
 
   console.log('\n=========================================================================')
   console.log('ALL PLAINTEXT CLOUD PASSWORD SYNCHRONIZATION TESTS PASSED (100% PASS)')

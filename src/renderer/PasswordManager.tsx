@@ -439,7 +439,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
             const wsData = wsSnap.data() as FirestoreWorkspaceDocument
             const existingList = Array.isArray(wsData.ws_passwords) ? [...wsData.ws_passwords] : []
             const idx = existingList.findIndex(
-              (p) => (p.credential_id || (p as any).credentialId) === editingCred.id
+              (p) => (p.pass_id || p.cred_id || p.credential_id || (p as any).credentialId) === editingCred.id
             )
             if (idx >= 0) {
               existingList[idx] = encryptedRecord
@@ -482,7 +482,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
             const wsData = wsSnap.data() as FirestoreWorkspaceDocument
             const existingList = Array.isArray(wsData.ws_passwords) ? wsData.ws_passwords : []
             const filtered = existingList.filter(
-              (p) => (p.credential_id || (p as any).credentialId) !== cred.id
+              (p) => (p.pass_id || p.cred_id || p.credential_id || (p as any).credentialId) !== cred.id
             )
             const writeResult = await syncWorkspacePasswords(user, cred.workspaceId, filtered, db)
             if (writeResult.synced) {
