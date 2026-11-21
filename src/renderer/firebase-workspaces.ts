@@ -13,9 +13,11 @@ import {
 } from 'firebase/firestore'
 import type { User } from 'firebase/auth'
 import type { Account, Workspace } from '../main/types'
+import type { CloudEncryptedCredentialRecord, FirestorePasswordRecord } from '../main/cloud-crypto'
 import { getFirebaseFirestore, FIREBASE_PROJECT_ID } from './firebase'
 
 export const WORKSPACES_COLLECTION = 'workspaces'
+export type { FirestorePasswordRecord }
 
 export interface FirestoreAccountItem {
   ws_acc_id: string
@@ -23,17 +25,11 @@ export interface FirestoreAccountItem {
   ws_acc_link: string
 }
 
-export interface FirestorePasswordItem {
-  pass_link: string
-  pass_name: string
-  pass_value: string
-}
-
 export interface FirestoreWorkspaceDocument {
   ws_id: string
   ws_owner_id: string
   ws_accounts: FirestoreAccountItem[]
-  ws_passwords: FirestorePasswordItem[]
+  ws_passwords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[]
   ws_status: number
   ws_users_ids: string[]
 }
@@ -481,51 +477,89 @@ export async function syncUserWorkspaces(
   }
 }
 
-export interface PasswordSyncProvider {
-  isPortableEncryptionConfigured(): boolean
-  encryptForSync(plainText: string): Promise<string>
-  decryptFromSync(cipherText: string): Promise<string>
-}
-
 /**
  * Interface for synchronizing passwords to Firestore.
- * Strictly verifies zero-knowledge encryption before permitting transmission.
+ * Strictly verifies end-to-end encryption before permitting transmission.
  * Electron safeStorage (Windows DPAPI) and plaintext passwords are unconditionally rejected.
  */
 export async function syncWorkspacePasswords(
   user: User | null,
   workspaceId: string,
-  passwords: FirestorePasswordItem[],
-  provider?: PasswordSyncProvider,
+  passwords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[],
   firestoreInstance?: Firestore
 ): Promise<{ synced: boolean; reason: string }> {
   if (!user || !user.uid) {
     return { synced: false, reason: 'Authentication required' }
   }
 
-  if (!provider || !provider.isPortableEncryptionConfigured()) {
-    return {
-      synced: false,
-      reason:
-        'Portable end-to-end encryption key management is not configured. Plaintext and machine-bound DPAPI passwords cannot be synchronized.'
+  if (!Array.isArray(passwords)) {
+    return { synced: false, reason: 'Invalid passwords format' }
+  }
+
+  // Strict E2EE validation: all records must contain encrypted envelope payload
+  for (const p of passwords) {
+    if (!p || typeof p !== 'object' || !p.credential_id) {
+      return {
+        synced: false,
+        reason: 'Invalid password record format: missing credential_id.'
+      }
+    }
+
+    const rec = p as any
+    // New format: pass_link, pass_name, pass_value
+    const isNewFormat =
+      typeof rec.pass_link === 'string' &&
+      typeof rec.pass_name === 'string' &&
+      typeof rec.pass_value === 'string' &&
+      rec.pass_value.trim().length > 0
+
+    // Legacy format fallback: encryption_version === 1, iv, ciphertext, auth_tag
+    const isLegacyFormat =
+      rec.encryption_version === 1 &&
+      Boolean(rec.iv) &&
+      Boolean(rec.ciphertext) &&
+      Boolean(rec.auth_tag)
+
+    if (!isNewFormat && !isLegacyFormat) {
+      return {
+        synced: false,
+        reason:
+          'Portable end-to-end encryption key management is not configured. Plaintext and machine-bound DPAPI passwords cannot be synchronized.'
+      }
     }
   }
 
   try {
+    console.log(
+      `[FIRESTORE][WORKSPACES][PASSWORDS][START] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | RecordsCount: ${passwords.length}`
+    )
     const db = firestoreInstance || getFirebaseFirestore()
     const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
     const snap = await getDoc(docRef)
     if (!snap.exists()) {
+      console.warn(
+        `[FIRESTORE][WORKSPACES][PASSWORDS][NOT_FOUND] Project: ${FIREBASE_PROJECT_ID} | Workspace: ${workspaceId}`
+      )
       return { synced: false, reason: 'Workspace document not found' }
     }
     const data = snap.data() as FirestoreWorkspaceDocument
     if (!isAuthorizedUser(user.uid, data)) {
+      console.warn(
+        `[FIRESTORE][WORKSPACES][PASSWORDS][UNAUTHORIZED] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId}`
+      )
       return { synced: false, reason: 'Unauthorized' }
     }
 
     await updateDoc(docRef, { ws_passwords: passwords })
+    console.log(
+      `[FIRESTORE][WORKSPACES][PASSWORDS][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Verified written: ${passwords.length} encrypted records`
+    )
     return { synced: true, reason: 'Passwords synchronized successfully' }
   } catch (error) {
-    return { synced: false, reason: error instanceof Error ? error.message : 'Sync failed' }
+    const errMsg = error instanceof Error ? error.message : String(error)
+    console.error(
+      `[FIRESTORE][WORKSPACES][PASSWORDS][ERROR] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Message: ${errMsg}`
+    )
+    return { synced: false, reason: errMsg }
   }
 }

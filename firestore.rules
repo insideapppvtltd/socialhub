@@ -11,8 +11,30 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // Helper function to validate password_crypto metadata structure and bounds
+    // -------------------------------------------------------------
+    function isValidPasswordCrypto(crypto) {
+      return crypto is map
+        && crypto.version == 1
+        && (crypto.created_at is int || crypto.created_at is number || crypto.created_at is timestamp)
+        && crypto.kdf is map
+        && crypto.kdf.name == 'scrypt'
+        && crypto.kdf.salt is string && crypto.kdf.salt.size() >= 16 && crypto.kdf.salt.size() <= 128
+        && (crypto.kdf.cost is int || crypto.kdf.cost is number) && crypto.kdf.cost >= 1024 && crypto.kdf.cost <= 1048576
+        && (crypto.kdf.blockSize is int || crypto.kdf.blockSize is number) && crypto.kdf.blockSize >= 1 && crypto.kdf.blockSize <= 64
+        && (crypto.kdf.parallelism is int || crypto.kdf.parallelism is number) && crypto.kdf.parallelism >= 1 && crypto.kdf.parallelism <= 16
+        && crypto.kdf.keyLen == 32
+        && crypto.wrapping is map
+        && crypto.wrapping.algorithm == 'AES-256-GCM'
+        && crypto.wrapping.iv is string && crypto.wrapping.iv.size() >= 12 && crypto.wrapping.iv.size() <= 64
+        && crypto.wrapping.authTag is string && crypto.wrapping.authTag.size() >= 16 && crypto.wrapping.authTag.size() <= 64
+        && crypto.wrapping.encryptedDek is string && crypto.wrapping.encryptedDek.size() >= 32 && crypto.wrapping.encryptedDek.size() <= 256;
+    }
+
+    // -------------------------------------------------------------
     // Users Collection
     // Document ID must match the Firebase Authentication UID
+    // Strictly limited to 8 profile fields
     // -------------------------------------------------------------
     match /users/{userId} {
       // Allow user to read only their own profile
@@ -24,16 +46,60 @@ service cloud.firestore {
       allow create: if request.auth != null
                     && request.auth.uid == userId
                     && request.resource.data.user_id == request.auth.uid
-                    && request.resource.data.user_status == 1;
+                    && request.resource.data.user_status == 1
+                    && request.resource.data.user_login_provider in ['GOOGLE', 'ANONYMOUS']
+                    && !('password_crypto' in request.resource.data)
+                    && request.resource.data.keys().hasOnly([
+                         'user_id',
+                         'user_name',
+                         'user_email',
+                         'user_dp_link',
+                         'user_login_provider',
+                         'user_at_created',
+                         'user_at_last_visit',
+                         'user_status'
+                       ]);
 
       // Allow updates to user profile fields
       // Ensure user_id cannot be changed and user_at_created is never modified
+      // Restrict all updates to an explicit allowlist of permitted fields using diff().affectedKeys()
+      // Disallow setting/updating password_crypto in users/{userId} (allow only deletion during migration)
       allow update: if request.auth != null
                     && request.auth.uid == userId
+                    && request.resource.data.user_id == resource.data.user_id
                     && request.resource.data.user_id == request.auth.uid
-                    && (!('user_at_created' in resource.data) || request.resource.data.user_at_created == resource.data.user_at_created);
+                    && (!('user_at_created' in resource.data) || request.resource.data.user_at_created == resource.data.user_at_created)
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                         'user_name',
+                         'user_email',
+                         'user_dp_link',
+                         'user_at_last_visit',
+                         'user_login_provider',
+                         'password_crypto'
+                       ])
+                    && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['password_crypto'])
+                        || !('password_crypto' in request.resource.data));
 
       // Client-side user deletion is forbidden
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------
+    // Dedicated Password Encryption Metadata Collection
+    // Document ID must match the Firebase Authentication UID
+    // -------------------------------------------------------------
+    match /password_crypto/{userId} {
+      // Allow user to read only their own encryption metadata
+      allow get: if request.auth != null && request.auth.uid == userId;
+      // Disallow querying/listing encryption metadata
+      allow list: if false;
+
+      // Allow owner to create or update their encryption metadata with strict structure checks
+      allow create, update: if request.auth != null
+                            && request.auth.uid == userId
+                            && isValidPasswordCrypto(request.resource.data);
+
+      // Client-side deletion is forbidden to prevent accidental key loss
       allow delete: if false;
     }
 

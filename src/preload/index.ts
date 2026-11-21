@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, NewAccount, Preferences, Workspace } from '../main/types'
 import type { CredentialSummary } from '../main/password-manager'
+import type { UserPasswordCryptoMetadata, CloudEncryptedCredentialRecord, FirestorePasswordRecord } from '../main/cloud-crypto'
 
-export type { CredentialSummary }
+export type { CredentialSummary, UserPasswordCryptoMetadata, CloudEncryptedCredentialRecord, FirestorePasswordRecord }
 
 export interface SocialHubAPI {
   setCurrentUser(uid: string | null, localOwners?: Record<string, string>): Promise<HubState>
@@ -45,6 +46,15 @@ export interface SocialHubAPI {
   updateCredential(payload: { id: string; username: string; password?: string }): Promise<unknown>
   deleteCredential(id: string): Promise<boolean>
   onPasswordsUpdated(callback: () => void): () => void
+  getCloudPasswordStatus(): Promise<{ unlocked: boolean }>
+  setupCloudPassword(masterPassword: string): Promise<{ metadata: UserPasswordCryptoMetadata }>
+  unlockCloudPassword(masterPassword: string, metadata: UserPasswordCryptoMetadata): Promise<{ success: boolean }>
+  lockCloudPassword(): Promise<boolean>
+  syncWorkspaceCredentialsWithCloud(
+    workspaceId: string,
+    remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[]
+  ): Promise<{ mergedRecords: FirestorePasswordRecord[]; localUpdated: boolean; remoteUpdated?: boolean }>
+  encryptCredentialForCloud(credentialId: string): Promise<FirestorePasswordRecord | null>
 }
 
 const api: SocialHubAPI = {
@@ -87,7 +97,16 @@ const api: SocialHubAPI = {
   copyPassword: (id) => ipcRenderer.invoke('hub:passwords-copy-password', id),
   updateCredential: (payload) => ipcRenderer.invoke('hub:passwords-update', payload),
   deleteCredential: (id) => ipcRenderer.invoke('hub:passwords-delete', id),
-  onPasswordsUpdated: (callback) => subscribe('hub:passwords-updated', callback)
+  onPasswordsUpdated: (callback) => subscribe('hub:passwords-updated', callback),
+  getCloudPasswordStatus: () => ipcRenderer.invoke('hub:passwords-cloud-status'),
+  setupCloudPassword: (masterPassword) => ipcRenderer.invoke('hub:passwords-cloud-setup', masterPassword),
+  unlockCloudPassword: (masterPassword, metadata) =>
+    ipcRenderer.invoke('hub:passwords-cloud-unlock', { masterPassword, metadata }),
+  lockCloudPassword: () => ipcRenderer.invoke('hub:passwords-cloud-lock'),
+  syncWorkspaceCredentialsWithCloud: (workspaceId, remoteRecords) =>
+    ipcRenderer.invoke('hub:passwords-cloud-sync-workspace', { workspaceId, remoteRecords }),
+  encryptCredentialForCloud: (credentialId) =>
+    ipcRenderer.invoke('hub:passwords-cloud-encrypt-single', credentialId)
 }
 
 function subscribe<T>(channel: string, callback: (value: T) => void): () => void {

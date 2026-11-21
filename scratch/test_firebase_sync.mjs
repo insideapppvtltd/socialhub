@@ -492,10 +492,22 @@ async function syncUserWorkspaces(user, localWorkspaces, localAccounts, bridge) 
 
 async function syncWorkspacePasswords(user, workspaceId, passwords, provider, bridge) {
   if (!user || !user.uid) return { synced: false, reason: 'Authentication required' }
-  if (!provider || !provider.isPortableEncryptionConfigured()) {
-    return {
-      synced: false,
-      reason: 'Portable end-to-end encryption key management is not configured. Plaintext and machine-bound DPAPI passwords cannot be synchronized.'
+  if (!Array.isArray(passwords)) return { synced: false, reason: 'Invalid passwords format' }
+  for (const p of passwords) {
+    if (
+      !p ||
+      typeof p !== 'object' ||
+      p.encryption_version !== 1 ||
+      !p.iv ||
+      !p.ciphertext ||
+      !p.auth_tag ||
+      !p.credential_id
+    ) {
+      return {
+        synced: false,
+        reason:
+          'Portable end-to-end encryption key management is not configured. Plaintext and machine-bound DPAPI passwords cannot be synchronized.'
+      }
     }
   }
   return { synced: true, reason: 'Passwords synchronized successfully' }

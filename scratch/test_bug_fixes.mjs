@@ -100,7 +100,7 @@ assert.match(
 // 2.2 PasswordManager must be mounted when passwordsOpen is true
 assert.match(
   appContent,
-  /\{\s*passwordsOpen\s*&&\s*\(\s*<PasswordManager\s+onClose=\{\(\)\s*=>\s*setPasswordsOpen\(false\)\}\s+showToast=\{showToast\}\s*\/>\s*\)\s*\}/,
+  /\{\s*passwordsOpen\s*&&\s*\(\s*<PasswordManager[\s\S]*?onClose=\{\(\)\s*=>\s*setPasswordsOpen\(false\)\}[\s\S]*?showToast=\{showToast\}[\s\S]*?\/>\s*\)/,
   'PasswordManager component MUST be conditionally mounted when passwordsOpen is true'
 )
 

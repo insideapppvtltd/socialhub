@@ -104,10 +104,15 @@ if (!gotLock) {
       if (window === created) window = null
     })
     created.on('ready-to-show', () => created.show())
-    created.webContents.on('console-message', (_event, level, message) => {
+    created.webContents.on('console-message', (event) => {
+      const message = typeof event?.message === 'string' ? event.message : ''
+      const level = event?.level
       if (message.startsWith('[FIRESTORE]') || message.startsWith('[AUTH]')) {
         console.log(message)
-      } else if (level >= 2 && (message.toLowerCase().includes('firestore') || message.toLowerCase().includes('firebase'))) {
+      } else if (
+        (level === 'error' || level === 'warning') &&
+        (message.toLowerCase().includes('firestore') || message.toLowerCase().includes('firebase'))
+      ) {
         console.error(`[RENDERER-CONSOLE][ERROR] ${message}`)
       }
     })

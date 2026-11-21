@@ -1799,3 +1799,202 @@ button { color: inherit; font: inherit; cursor: pointer; }
   background: #381a1a;
   color: #f87171;
 }
+
+/* Cloud Sync Controls in Password Manager */
+.passwords-sync-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.passwords-sync-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.passwords-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all .15s ease;
+  line-height: 1;
+}
+
+.passwords-sync-pill.unconfigured {
+  background: var(--hover);
+  border-color: var(--line);
+  color: var(--muted);
+}
+.passwords-sync-pill.unconfigured:hover {
+  background: var(--surface);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.passwords-sync-pill.locked {
+  background: #fef3c7;
+  border-color: #fde68a;
+  color: #b45309;
+}
+.passwords-sync-pill.locked:hover {
+  background: #fde68a;
+}
+
+.passwords-sync-pill.syncing {
+  background: var(--green-soft);
+  border-color: rgba(19, 139, 84, 0.2);
+  color: var(--green);
+  cursor: default;
+}
+
+.passwords-sync-pill.synced {
+  background: var(--green-soft);
+  border-color: rgba(19, 139, 84, 0.2);
+  color: var(--green);
+  cursor: default;
+}
+
+.passwords-sync-pill.error {
+  background: #fee2e2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+.passwords-sync-pill.error:hover {
+  background: #fca5a5;
+}
+
+.passwords-sync-action-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.passwords-sync-action-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.passwords-spin-icon {
+  animation: passwordsSpin 1s linear infinite;
+}
+@keyframes passwordsSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.passwords-ws-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.passwords-storage-badge {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: .2px;
+}
+.passwords-storage-badge.cloud-synced {
+  background: var(--green-soft);
+  color: var(--green);
+  border: 1px solid rgba(19, 139, 84, 0.2);
+}
+.passwords-storage-badge.syncing {
+  background: rgba(26, 115, 232, 0.1);
+  color: #1a73e8;
+  border: 1px solid rgba(26, 115, 232, 0.25);
+}
+.passwords-storage-badge.pending {
+  background: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.passwords-storage-badge.failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+.passwords-storage-badge.local-only {
+  background: var(--hover);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.passwords-crypto-dialog {
+  max-width: 480px;
+}
+
+.passwords-dialog-desc {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.passwords-warning-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  line-height: 1.45;
+  margin-bottom: 14px;
+}
+
+.passwords-warning-icon {
+  flex-shrink: 0;
+  color: #d97706;
+  margin-top: 1px;
+}
+
+.passwords-dialog-error {
+  padding: 8px 12px;
+  border-radius: 7px;
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  font-size: 11px;
+  font-weight: 550;
+  margin-bottom: 12px;
+}
+
+/* Dark mode adjustments for Password Manager Cloud Sync */
+[data-theme="dark"] .passwords-sync-pill.locked {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.3);
+  color: #fbbf24;
+}
+[data-theme="dark"] .passwords-sync-pill.error {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+[data-theme="dark"] .passwords-warning-box {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: #fde68a;
+}
+[data-theme="dark"] .passwords-dialog-error {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+}

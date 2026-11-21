@@ -135,6 +135,65 @@ export function registerIpc(
     }
     return deleted
   })
+  // Cloud Password E2EE Synchronisation Channels
+  ipcMain.handle('hub:passwords-cloud-status', (event) => {
+    guard(event)
+    return {
+      unlocked: passwordManager?.isCloudUnlocked() ?? false
+    }
+  })
+  ipcMain.handle('hub:passwords-cloud-setup', (event, masterPassword: unknown) => {
+    guard(event)
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    if (typeof masterPassword !== 'string' || masterPassword.length < 6) {
+      throw new Error('Master password must be at least 6 characters long.')
+    }
+    const metadata = passwordManager.setupCloud(masterPassword)
+    return { metadata }
+  })
+  ipcMain.handle('hub:passwords-cloud-unlock', (event, payload: unknown) => {
+    guard(event)
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid payload.')
+    const data = payload as { masterPassword?: unknown; metadata?: unknown }
+    if (typeof data.masterPassword !== 'string' || !data.masterPassword) {
+      throw new Error('Master password is required.')
+    }
+    if (!data.metadata || typeof data.metadata !== 'object') {
+      throw new Error('Cloud encryption metadata is required.')
+    }
+    const success = passwordManager.unlockCloud(data.masterPassword, data.metadata as any)
+    return { success }
+  })
+  ipcMain.handle('hub:passwords-cloud-lock', (event) => {
+    guard(event)
+    passwordManager?.lockCloud()
+    return true
+  })
+  ipcMain.handle('hub:passwords-cloud-sync-workspace', (event, payload: unknown) => {
+    guard(event)
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    if (!payload || typeof payload !== 'object') throw new Error('Invalid payload.')
+    const data = payload as { workspaceId?: unknown; remoteRecords?: unknown }
+    if (typeof data.workspaceId !== 'string' || !data.workspaceId.trim()) {
+      throw new Error('Workspace ID is required.')
+    }
+    const remoteRecords = Array.isArray(data.remoteRecords) ? (data.remoteRecords as any[]) : []
+    passwordManager.reconcileWorkspaceIds(accounts.listWorkspaces(), accounts.list())
+    const result = passwordManager.syncWorkspaceCredentialsWithCloud(data.workspaceId.trim(), remoteRecords)
+    if (result.localUpdated) {
+      broadcastPasswordsUpdated()
+    }
+    return result
+  })
+  ipcMain.handle('hub:passwords-cloud-encrypt-single', (event, credentialId: unknown) => {
+    guard(event)
+    if (!passwordManager) throw new Error('Password manager is not available.')
+    if (typeof credentialId !== 'string' || !credentialId.trim()) {
+      throw new Error('Credential ID is required.')
+    }
+    return passwordManager.encryptCredentialForCloud(credentialId.trim())
+  })
   ipcMain.handle('hub:passwords-query-matches', (event, _payload: unknown) => {
     const senderFrame = event.senderFrame
     if (!senderFrame) return []
@@ -215,8 +274,12 @@ export function registerIpc(
     guard(event)
     const userUid = typeof uid === 'string' && uid.trim() ? uid.trim() : null
     const owners = localOwners && typeof localOwners === 'object' ? (localOwners as Record<string, string>) : undefined
+    const previousUid = accounts.getCurrentUser()
     accounts.setCurrentUser(userUid, owners)
     views.switchUser(userUid)
+    if (previousUid !== userUid || userUid === null) {
+      passwordManager?.lockCloud()
+    }
     window.webContents.send('hub:state', getState())
     broadcastNotifications()
     broadcastPasswordsUpdated()

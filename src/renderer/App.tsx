@@ -131,6 +131,7 @@ export default function App() {
   const handleLogout = useCallback(async () => {
     try {
       resetUserSyncCache()
+      await window.socialHub.lockCloudPassword().catch(() => {})
       await logoutUser()
       await window.socialHub.setCurrentUser(null)
       showToast('Logged out successfully.')
@@ -1005,6 +1006,8 @@ export default function App() {
 
       {passwordsOpen && (
         <PasswordManager
+          user={firebaseUser}
+          workspaces={state.workspaces}
           onClose={() => setPasswordsOpen(false)}
           showToast={showToast}
         />
