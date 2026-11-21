@@ -46,13 +46,13 @@ export interface SocialHubAPI {
   updateCredential(payload: { id: string; username: string; password?: string }): Promise<unknown>
   deleteCredential(id: string): Promise<boolean>
   onPasswordsUpdated(callback: () => void): () => void
-  getCloudPasswordStatus(): Promise<{ unlocked: boolean }>
+  getCloudPasswordStatus(): Promise<{ unlocked: boolean; configured?: boolean }>
   setupCloudPassword(masterPassword: string): Promise<{ metadata: UserPasswordCryptoMetadata }>
   unlockCloudPassword(masterPassword: string, metadata: UserPasswordCryptoMetadata): Promise<{ success: boolean }>
   lockCloudPassword(): Promise<boolean>
   syncWorkspaceCredentialsWithCloud(
     workspaceId: string,
-    remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[]
+    remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord | any)[]
   ): Promise<{ mergedRecords: FirestorePasswordRecord[]; localUpdated: boolean; remoteUpdated?: boolean }>
   encryptCredentialForCloud(credentialId: string): Promise<FirestorePasswordRecord | null>
 }

@@ -135,11 +135,12 @@ export function registerIpc(
     }
     return deleted
   })
-  // Cloud Password E2EE Synchronisation Channels
+  // Cloud Password Plaintext Synchronisation Channels (Local DPAPI)
   ipcMain.handle('hub:passwords-cloud-status', (event) => {
     guard(event)
     return {
-      unlocked: passwordManager?.isCloudUnlocked() ?? false
+      unlocked: true,
+      configured: true
     }
   })
   ipcMain.handle('hub:passwords-cloud-setup', (event, masterPassword: unknown) => {

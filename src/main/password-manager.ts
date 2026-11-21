@@ -5,10 +5,8 @@ import type { Workspace } from './types'
 import {
   generateUserPasswordCrypto,
   unwrapUserPasswordCrypto,
-  encryptCloudCredential,
   decryptCloudCredential,
   validatePasswordCryptoMetadata,
-  validateCloudEncryptedRecord,
   type UserPasswordCryptoMetadata,
   type CloudEncryptedCredentialRecord,
   type FirestorePasswordRecord
@@ -343,12 +341,12 @@ export class PasswordManager {
   }
 
   // -------------------------------------------------------------
-  // CLOUD SYNCHRONIZATION METHODS (End-to-End Encrypted)
+  // CLOUD SYNCHRONIZATION METHODS (Plaintext Cloud Storage with Local DPAPI)
   // -------------------------------------------------------------
   private cloudDek: Buffer | null = null
 
   isCloudUnlocked(): boolean {
-    return this.cloudDek !== null && this.cloudDek.length === 32
+    return true
   }
 
   lockCloud(): void {
@@ -389,9 +387,10 @@ export class PasswordManager {
     const cleanUsername = (username || '').trim()
     const trimmedPassword = (plainPassword || '').trim()
 
-    if (!cleanOrigin || !trimmedPassword || !workspaceId || !accountId) {
+    if (!cleanOrigin || !trimmedPassword || !workspaceId) {
       throw new Error('Incomplete credential data from cloud.')
     }
+    const cleanAccountId = accountId || 'default-acc'
 
     const encrypted = this.encryption.encrypt(trimmedPassword)
     const credentials = [...(this.store.get('credentials') || [])]
@@ -402,7 +401,7 @@ export class PasswordManager {
       (c) =>
         c.id === targetId ||
         (c.workspaceId === workspaceId &&
-          c.accountId === accountId &&
+          c.accountId === cleanAccountId &&
           normalizeOrigin(c.origin) === cleanOrigin &&
           c.username.toLowerCase() === cleanUsername.toLowerCase())
     )
@@ -413,7 +412,7 @@ export class PasswordManager {
         ...existing,
         id: existing.id,
         workspaceId,
-        accountId,
+        accountId: cleanAccountId,
         origin: cleanOrigin,
         username: cleanUsername,
         passwordEncrypted: encrypted,
@@ -427,7 +426,7 @@ export class PasswordManager {
     const newRecord: StoredCredentialRecord = {
       id: targetId,
       workspaceId,
-      accountId,
+      accountId: cleanAccountId,
       origin: cleanOrigin,
       username: cleanUsername,
       passwordEncrypted: encrypted,
@@ -440,18 +439,53 @@ export class PasswordManager {
     return newRecord
   }
 
+  formatCredentialForCloud(credentialId: string): FirestorePasswordRecord | null {
+    const credentials = this.store.get('credentials') || []
+    const loc = credentials.find((c) => c.id === credentialId)
+    if (!loc) return null
+
+    try {
+      const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
+      return {
+        cred_id: loc.id,
+        pass_link: loc.origin,
+        pass_name: loc.username,
+        pass_value: plainPass
+      }
+    } catch {
+      return null
+    }
+  }
+
+  getPlaintextWorkspacePasswords(workspaceId: string): FirestorePasswordRecord[] {
+    const credentials = (this.store.get('credentials') || []).filter(
+      (c) => c.workspaceId === workspaceId
+    )
+    const records: FirestorePasswordRecord[] = []
+    for (const c of credentials) {
+      try {
+        const plain = this.encryption.decrypt(c.passwordEncrypted)
+        records.push({
+          cred_id: c.id,
+          pass_link: c.origin,
+          pass_name: c.username,
+          pass_value: plain
+        })
+      } catch (err) {
+        console.error(`[PASSWORDS] Could not decrypt local credential ${c.id}:`, err)
+      }
+    }
+    return records
+  }
+
   syncWorkspaceCredentialsWithCloud(
     workspaceId: string,
-    remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[]
+    remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord | any)[]
   ): {
     mergedRecords: FirestorePasswordRecord[]
     localUpdated: boolean
     remoteUpdated: boolean
   } {
-    if (!this.cloudDek) {
-      throw new Error('Password Manager must be unlocked with master password before synchronizing.')
-    }
-
     // Automatically reconcile any orphaned or legacy workspace credentials
     const allStored = this.store.get('credentials') || []
     let storeMigrated = false
@@ -477,118 +511,161 @@ export class PasswordManager {
 
     const mergedMap = new Map<string, FirestorePasswordRecord>()
 
-    // 1. Process and decrypt remote records
+    // 1. Process remote records (handle plaintext or migrate legacy encrypted)
     for (const remote of remoteRecords || []) {
-      if (!validateCloudEncryptedRecord(remote)) continue
+      if (!remote || typeof remote !== 'object') continue
 
-      try {
-        const decrypted = decryptCloudCredential(this.cloudDek, workspaceId, remote)
+      const credId: string = remote.cred_id || remote.credential_id || remote.id || ''
+      if (!credId) continue
 
-        // Convert remote record to FirestorePasswordRecord format if it was legacy
-        let formattedRemote: FirestorePasswordRecord
-        const rec = remote as any
-        if (typeof rec.pass_value === 'string' && typeof rec.pass_link === 'string' && typeof rec.pass_name === 'string') {
-          formattedRemote = rec as FirestorePasswordRecord
+      // Check if remote record is a legacy encrypted record
+      const isLegacyEncrypted =
+        remote.encryption_version === 1 ||
+        Boolean(remote.iv && remote.ciphertext) ||
+        (typeof remote.pass_value === 'string' &&
+          (remote.pass_value.startsWith('{"iv":') ||
+            remote.pass_value.startsWith('{"encryption_version":')))
+
+      if (isLegacyEncrypted) {
+        // Attempt to decrypt using local credentials or available DEK
+        let decryptedPlaintext: string | null = null
+        let decryptedLink: string = remote.pass_link || ''
+        let decryptedName: string = remote.pass_name || ''
+
+        // Strategy A: Match with local credential already stored on this machine
+        const localMatch = localCredentials.find(
+          (c) =>
+            c.id === credId ||
+            (normalizeOrigin(c.origin) === normalizeOrigin(remote.pass_link || '') &&
+              c.username.toLowerCase() === (remote.pass_name || '').toLowerCase())
+        )
+
+        if (localMatch) {
+          try {
+            decryptedPlaintext = this.encryption.decrypt(localMatch.passwordEncrypted)
+            decryptedLink = localMatch.origin
+            decryptedName = localMatch.username
+          } catch {}
+        }
+
+        // Strategy B: If cloud DEK is available, unwrap using DEK
+        if (!decryptedPlaintext && this.cloudDek) {
+          try {
+            const dec = decryptCloudCredential(this.cloudDek, workspaceId, remote)
+            decryptedPlaintext = dec.password
+            decryptedLink = dec.origin
+            decryptedName = dec.username
+
+            // Also ensure saved locally
+            this.saveCredentialFromCloud(
+              workspaceId,
+              dec.accountId || 'default-acc',
+              dec.origin,
+              dec.username,
+              dec.password,
+              dec.id,
+              dec.createdAt,
+              dec.updatedAt
+            )
+            localUpdated = true
+          } catch {}
+        }
+
+        if (decryptedPlaintext !== null) {
+          // Successfully migrated to plaintext
+          const migrated: FirestorePasswordRecord = {
+            cred_id: credId,
+            pass_link: decryptedLink,
+            pass_name: decryptedName,
+            pass_value: decryptedPlaintext
+          }
+          mergedMap.set(credId, migrated)
         } else {
-          // Migrate legacy record
-          const envelope = {
-            encryption_version: 1,
-            iv: rec.iv,
-            ciphertext: rec.ciphertext,
-            auth_tag: rec.auth_tag,
-            updated_at: rec.updated_at || decrypted.updatedAt || Date.now()
-          }
-          formattedRemote = {
-            credential_id: rec.credential_id,
-            pass_link: decrypted.origin,
-            pass_name: decrypted.username,
-            pass_value: JSON.stringify(envelope)
+          // Preserve un-decryptable record as-is rather than destroying it
+          console.warn(
+            `[PASSWORDS][SYNC] Could not decrypt legacy remote record ${credId}; preserving record.`
+          )
+          mergedMap.set(credId, {
+            cred_id: credId,
+            pass_link: remote.pass_link || '',
+            pass_name: remote.pass_name || '',
+            pass_value: remote.pass_value || ''
+          })
+        }
+      } else {
+        // Record is already plaintext format
+        const plaintextRec: FirestorePasswordRecord = {
+          cred_id: credId,
+          pass_link: typeof remote.pass_link === 'string' ? remote.pass_link : '',
+          pass_name: typeof remote.pass_name === 'string' ? remote.pass_name : '',
+          pass_value: typeof remote.pass_value === 'string' ? remote.pass_value : ''
+        }
+        mergedMap.set(credId, plaintextRec)
+
+        // If not found locally, import to local storage with safeStorage
+        const localMatch = localCredentials.find(
+          (c) =>
+            c.id === credId ||
+            (normalizeOrigin(c.origin) === normalizeOrigin(plaintextRec.pass_link) &&
+              c.username.toLowerCase() === plaintextRec.pass_name.toLowerCase())
+        )
+
+        if (!localMatch && plaintextRec.pass_value && plaintextRec.pass_link) {
+          try {
+            this.saveCredentialFromCloud(
+              workspaceId,
+              'default-acc',
+              plaintextRec.pass_link,
+              plaintextRec.pass_name,
+              plaintextRec.pass_value,
+              credId
+            )
+            localUpdated = true
+          } catch (importErr) {
+            console.error(`[PASSWORDS][SYNC] Failed to import remote credential ${credId} locally:`, importErr)
           }
         }
-
-        mergedMap.set(formattedRemote.credential_id, formattedRemote)
-
-        // Extract updated_at from envelope if present
-        let remoteUpdatedAt = decrypted.updatedAt || 0
-        try {
-          const parsedEnv = JSON.parse(formattedRemote.pass_value)
-          if (parsedEnv.updated_at) remoteUpdatedAt = parsedEnv.updated_at
-        } catch {}
-
-        const local = localCredentials.find((c) => c.id === decrypted.id)
-        if (!local) {
-          // Missing locally -> download and store locally with safeStorage
-          this.saveCredentialFromCloud(
-            workspaceId,
-            decrypted.accountId,
-            decrypted.origin,
-            decrypted.username,
-            decrypted.password,
-            decrypted.id,
-            decrypted.createdAt,
-            decrypted.updatedAt
-          )
-          localUpdated = true
-        } else if (remoteUpdatedAt > (local.updatedAt || 0)) {
-          // Cloud has newer revision -> update local
-          this.saveCredentialFromCloud(
-            workspaceId,
-            decrypted.accountId,
-            decrypted.origin,
-            decrypted.username,
-            decrypted.password,
-            local.id,
-            local.createdAt,
-            remoteUpdatedAt
-          )
-          localUpdated = true
-        }
-      } catch (err) {
-        console.warn(`[PASSWORDS][SYNC] Could not decrypt cloud credential ${(remote as any).credential_id}:`, err)
       }
     }
 
-    // 2. Process local credentials to upload missing or newer ones
+    // 2. Process local credentials to ensure all local passwords exist in cloud merged set
     const freshLocal = (this.store.get('credentials') || []).filter(
       (c) => c.workspaceId === workspaceId
     )
 
     for (const loc of freshLocal) {
-      const existingCloud = mergedMap.get(loc.id)
-      let existingUpdatedAt = 0
-      if (existingCloud) {
-        try {
-          const parsed = JSON.parse(existingCloud.pass_value)
-          existingUpdatedAt = parsed.updated_at || 0
-        } catch {}
-      }
-
-      if (!existingCloud || (loc.updatedAt || 0) > existingUpdatedAt) {
-        try {
-          const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
-          const encryptedCloud = encryptCloudCredential(this.cloudDek, workspaceId, loc, plainPass)
-          mergedMap.set(loc.id, encryptedCloud)
-        } catch (err) {
-          console.error(`[PASSWORDS][SYNC] Failed to encrypt local credential ${loc.id} for cloud:`, err)
+      try {
+        const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
+        const cloudRecord: FirestorePasswordRecord = {
+          cred_id: loc.id,
+          pass_link: loc.origin,
+          pass_name: loc.username,
+          pass_value: plainPass
         }
+        mergedMap.set(loc.id, cloudRecord)
+      } catch (err) {
+        console.error(`[PASSWORDS][SYNC] Failed to decrypt local credential ${loc.id}:`, err)
       }
     }
 
     const mergedRecords = Array.from(mergedMap.values())
 
-    // Determine whether remote Firestore document needs to be updated
+    // 3. Determine whether remote Firestore document needs to be updated
     let remoteUpdated = false
     if (mergedRecords.length !== (remoteRecords || []).length) {
       remoteUpdated = true
     } else {
-      const remoteMap = new Map((remoteRecords || []).map((r: any) => [r.credential_id, r]))
+      const remoteMap = new Map<string, any>(
+        (remoteRecords || []).map((r: any) => [r.cred_id || r.credential_id || r.id, r])
+      )
       for (const merged of mergedRecords) {
-        const remote = remoteMap.get(merged.credential_id)
+        const remote = remoteMap.get(merged.cred_id)
         if (
           !remote ||
           remote.pass_value !== merged.pass_value ||
           remote.pass_link !== merged.pass_link ||
-          remote.pass_name !== merged.pass_name
+          remote.pass_name !== merged.pass_name ||
+          remote.credential_id !== undefined // Legacy field present -> needs schema normalization
         ) {
           remoteUpdated = true
           break
@@ -604,17 +681,7 @@ export class PasswordManager {
   }
 
   encryptCredentialForCloud(credentialId: string): FirestorePasswordRecord | null {
-    if (!this.cloudDek) return null
-    const credentials = this.store.get('credentials') || []
-    const loc = credentials.find((c) => c.id === credentialId)
-    if (!loc) return null
-
-    try {
-      const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
-      return encryptCloudCredential(this.cloudDek, loc.workspaceId, loc, plainPass)
-    } catch {
-      return null
-    }
+    return this.formatCredentialForCloud(credentialId)
   }
 }
 

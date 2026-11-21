@@ -11,24 +11,12 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
-    // Helper function to validate password_crypto metadata structure and bounds
+    // Obsolete Password Encryption Metadata Collection
+    // Cloud encryption layer removed in favor of direct plaintext storage in workspaces
+    // Explicitly deny all access to prevent unauthorized reads/writes
     // -------------------------------------------------------------
-    function isValidPasswordCrypto(crypto) {
-      return crypto is map
-        && crypto.version == 1
-        && (crypto.created_at is int || crypto.created_at is number || crypto.created_at is timestamp)
-        && crypto.kdf is map
-        && crypto.kdf.name == 'scrypt'
-        && crypto.kdf.salt is string && crypto.kdf.salt.size() >= 16 && crypto.kdf.salt.size() <= 128
-        && (crypto.kdf.cost is int || crypto.kdf.cost is number) && crypto.kdf.cost >= 1024 && crypto.kdf.cost <= 1048576
-        && (crypto.kdf.blockSize is int || crypto.kdf.blockSize is number) && crypto.kdf.blockSize >= 1 && crypto.kdf.blockSize <= 64
-        && (crypto.kdf.parallelism is int || crypto.kdf.parallelism is number) && crypto.kdf.parallelism >= 1 && crypto.kdf.parallelism <= 16
-        && crypto.kdf.keyLen == 32
-        && crypto.wrapping is map
-        && crypto.wrapping.algorithm == 'AES-256-GCM'
-        && crypto.wrapping.iv is string && crypto.wrapping.iv.size() >= 12 && crypto.wrapping.iv.size() <= 64
-        && crypto.wrapping.authTag is string && crypto.wrapping.authTag.size() >= 16 && crypto.wrapping.authTag.size() <= 64
-        && crypto.wrapping.encryptedDek is string && crypto.wrapping.encryptedDek.size() >= 32 && crypto.wrapping.encryptedDek.size() <= 256;
+    match /password_crypto/{document=**} {
+      allow read, write: if false;
     }
 
     // -------------------------------------------------------------
@@ -85,25 +73,6 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
-    // Dedicated Password Encryption Metadata Collection
-    // Document ID must match the Firebase Authentication UID
-    // -------------------------------------------------------------
-    match /password_crypto/{userId} {
-      // Allow user to read only their own encryption metadata
-      allow get: if request.auth != null && request.auth.uid == userId;
-      // Disallow querying/listing encryption metadata
-      allow list: if false;
-
-      // Allow owner to create or update their encryption metadata with strict structure checks
-      allow create, update: if request.auth != null
-                            && request.auth.uid == userId
-                            && isValidPasswordCrypto(request.resource.data);
-
-      // Client-side deletion is forbidden to prevent accidental key loss
-      allow delete: if false;
-    }
-
-    // -------------------------------------------------------------
     // Workspaces Collection
     // Document ID matches the Social HUB workspace ID
     // -------------------------------------------------------------
@@ -128,17 +97,21 @@ service cloud.firestore {
                     && request.resource.data.ws_id == workspaceId
                     && request.resource.data.ws_owner_id == request.auth.uid
                     && request.resource.data.ws_status == 1
-                    && (request.resource.data.ws_users_ids is list && request.auth.uid in request.resource.data.ws_users_ids);
+                    && (request.resource.data.ws_users_ids is list && request.auth.uid in request.resource.data.ws_users_ids)
+                    && (!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list);
 
       // Workspace updates:
-      // Authorized owner or member can update accounts/passwords,
-      // but client CANNOT alter ws_owner_id, ws_id, or tamper with ws_users_ids
+      // Authorized owner or member can update accounts/passwords/timestamps,
+      // but client CANNOT alter ws_owner_id, ws_id, tamper with ws_users_ids,
+      // and ws_at_created cannot be modified once set
       allow update: if request.auth != null
                     && (resource.data.ws_owner_id == request.auth.uid ||
                         (resource.data.ws_users_ids is list && request.auth.uid in resource.data.ws_users_ids))
                     && request.resource.data.ws_id == resource.data.ws_id
                     && request.resource.data.ws_owner_id == resource.data.ws_owner_id
-                    && (!('ws_users_ids' in resource.data) || request.resource.data.ws_users_ids == resource.data.ws_users_ids);
+                    && (!('ws_users_ids' in resource.data) || request.resource.data.ws_users_ids == resource.data.ws_users_ids)
+                    && (!('ws_at_created' in resource.data) || request.resource.data.ws_at_created == resource.data.ws_at_created)
+                    && (!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list);
 
       // Workspace deletion:
       // Only the workspace owner can delete the workspace document

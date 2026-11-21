@@ -9,7 +9,6 @@ import {
   Globe,
   KeyRound,
   Layers,
-  Lock,
   Pencil,
   RefreshCw,
   Search,
@@ -19,8 +18,7 @@ import {
 } from 'lucide-react'
 import type { User } from 'firebase/auth'
 import type { Workspace } from '../main/types'
-import type { CredentialSummary, UserPasswordCryptoMetadata } from '../preload'
-import { getUserPasswordCryptoResult, syncUserPasswordCrypto } from './firebase-users'
+import type { CredentialSummary } from '../preload'
 import { syncWorkspacePasswords, WORKSPACES_COLLECTION, type FirestoreWorkspaceDocument } from './firebase-workspaces'
 import { getFirebaseFirestore } from './firebase'
 import { doc, getDoc } from 'firebase/firestore'
@@ -32,8 +30,8 @@ interface PasswordManagerProps {
   showToast: (message: string) => void
 }
 
-type CloudSyncState = 'unconfigured' | 'locked' | 'unlocking' | 'syncing' | 'unlocked' | 'error'
-type WorkspaceSyncState = 'local' | 'pending' | 'syncing' | 'synced' | 'failed'
+type CloudSyncState = 'local' | 'syncing' | 'synced' | 'failed'
+type WorkspaceSyncState = 'local' | 'syncing' | 'synced' | 'failed'
 
 export function PasswordManager({ user, workspaces, onClose, showToast }: PasswordManagerProps) {
   const [credentials, setCredentials] = useState<CredentialSummary[]>([])
@@ -47,10 +45,8 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
   const [showEditPassword, setShowEditPassword] = useState(false)
   const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' } | null>(null)
 
-  // User-level Cloud E2EE Password Manager state
-  const [cloudStatus, setCloudStatus] = useState<CloudSyncState>('locked')
-  const [isUnlocked, setIsUnlocked] = useState(false)
-  const [userCrypto, setUserCrypto] = useState<UserPasswordCryptoMetadata | null>(null)
+  // Cloud Sync state: 'local' | 'syncing' | 'synced' | 'failed'
+  const [cloudStatus, setCloudStatus] = useState<CloudSyncState>(user ? 'syncing' : 'local')
   const [syncError, setSyncError] = useState<string | null>(null)
 
   // Workspace-level synchronization states
@@ -60,28 +56,9 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
   // Synchronization lifecycle guards and stable references
   const isSyncingRef = useRef(false)
   const syncedWorkspacesRef = useRef<Set<string>>(new Set())
-  const userCryptoRef = useRef<UserPasswordCryptoMetadata | null>(userCrypto)
-  userCryptoRef.current = userCrypto
 
   const workspacesRef = useRef<Workspace[]>(workspaces)
   workspacesRef.current = workspaces
-
-  const lastCheckedUidRef = useRef<string | null>(null)
-
-  // Setup Master Password Modal
-  const [setupModalOpen, setSetupModalOpen] = useState(false)
-  const [setupPass, setSetupPass] = useState('')
-  const [setupConfirm, setSetupConfirm] = useState('')
-  const [setupShowPass, setSetupShowPass] = useState(false)
-  const [setupLoading, setSetupLoading] = useState(false)
-  const [setupError, setSetupError] = useState<string | null>(null)
-
-  // Unlock Master Password Modal
-  const [unlockModalOpen, setUnlockModalOpen] = useState(false)
-  const [unlockPass, setUnlockPass] = useState('')
-  const [unlockShowPass, setUnlockShowPass] = useState(false)
-  const [unlockLoading, setUnlockLoading] = useState(false)
-  const [unlockError, setUnlockError] = useState<string | null>(null)
 
   const loadCredentials = useCallback(async () => {
     try {
@@ -100,21 +77,14 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
   }, [showToast])
 
   // Check whether all existing workspaces have been successfully synced
-  const allWorkspacesSynced = useMemo(() => {
-    if (!workspaces.length) return true
-    return workspaces.every((ws) => workspaceSyncStatuses[ws.id] === 'synced')
-  }, [workspaces, workspaceSyncStatuses])
-
   // Synchronize credentials across authorized workspaces
   const runCloudSync = useCallback(
-    async (
-      targetMetadata?: UserPasswordCryptoMetadata | null,
-      force = false,
-      targetWorkspaceId?: string
-    ) => {
-      if (!user || !user.uid) return
-      const meta = targetMetadata ?? userCryptoRef.current
-      if (!meta) return
+    async (force = false, targetWorkspaceId?: string) => {
+      if (!user || !user.uid) {
+        setCloudStatus('local')
+        setWorkspaceSyncStatuses({})
+        return
+      }
 
       if (isSyncingRef.current) {
         console.log('[PASSWORDS][SYNC] Synchronization already in-flight, skipping duplicate request.')
@@ -172,7 +142,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
               continue
             }
 
-            // Sync with local store in main process
+            // Sync with local store in main process (handles plaintext and migration of legacy records)
             const syncResult = await window.socialHub.syncWorkspaceCredentialsWithCloud(
               ws.id,
               remotePasswords
@@ -238,16 +208,16 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
 
         if (hasAnyError) {
           setSyncError(lastErrorMessage)
-          setCloudStatus('error')
+          setCloudStatus('failed')
         } else {
           setSyncError(null)
-          setCloudStatus('unlocked')
+          setCloudStatus('synced')
         }
       } catch (err) {
         console.error('[PASSWORDS][SYNC] Cloud synchronization error:', err)
         const msg = err instanceof Error ? err.message : 'Cloud synchronization failed.'
         setSyncError(msg)
-        setCloudStatus('error')
+        setCloudStatus('failed')
       } finally {
         isSyncingRef.current = false
       }
@@ -255,85 +225,32 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
     [user, loadCredentials]
   )
 
-  // Initialize Cloud Sync status on mount or user change
-  const checkCloudStatus = useCallback(async () => {
-    if (!user || !user.uid) {
-      setCloudStatus('unconfigured')
-      setIsUnlocked(false)
-      setUserCrypto(null)
-      userCryptoRef.current = null
-      syncedWorkspacesRef.current.clear()
-      setWorkspaceSyncStatuses({})
-      lastCheckedUidRef.current = null
-      return
-    }
-
-    try {
-      const status = await window.socialHub.getCloudPasswordStatus()
-
-      // Avoid refetching Firestore document if we already have the crypto metadata for this user
-      let meta = userCryptoRef.current
-      if (!meta || lastCheckedUidRef.current !== user.uid) {
-        const lookup = await getUserPasswordCryptoResult(user)
-        if (lookup.status === 'found') {
-          meta = lookup.metadata
-          userCryptoRef.current = meta
-          setUserCrypto(meta)
-          lastCheckedUidRef.current = user.uid
-        } else if (lookup.status === 'permission_denied') {
-          console.error('[PASSWORDS] Permission denied reading encryption metadata:', lookup.error)
-          setIsUnlocked(false)
-          setCloudStatus('error')
-          setSyncError(lookup.error || 'Missing or insufficient permissions. Please publish Firestore security rules.')
-          return
-        } else if (lookup.status === 'unavailable') {
-          console.warn('[PASSWORDS] Firestore is offline or unavailable.')
-          setIsUnlocked(false)
-          setCloudStatus('error')
-          setSyncError('Firestore is currently offline or unreachable.')
-          return
-        } else if (lookup.status === 'error') {
-          console.error('[PASSWORDS] Error reading encryption metadata:', lookup.error)
-          setIsUnlocked(false)
-          setCloudStatus('error')
-          setSyncError(lookup.error || 'Failed to check encryption configuration.')
-          return
-        } else {
-          // Genuinely not configured
-          meta = null
-          userCryptoRef.current = null
-          setUserCrypto(null)
-          lastCheckedUidRef.current = user.uid
-        }
+  // Re-sync on network connectivity return
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log('[PASSWORDS] Network online event received. Retrying sync...')
+      if (user && user.uid) {
+        void runCloudSync(true)
       }
-
-      if (meta) {
-        if (status?.unlocked) {
-          setIsUnlocked(true)
-          setCloudStatus('unlocked')
-          // Trigger initial sync only for workspaces not yet verified in this session
-          void runCloudSync(meta)
-        } else {
-          setIsUnlocked(false)
-          setCloudStatus('locked')
-        }
-      } else {
-        setIsUnlocked(false)
-        setCloudStatus('unconfigured')
-      }
-    } catch (err) {
-      console.warn('[PASSWORDS] Could not determine cloud password status:', err)
-      setCloudStatus('error')
     }
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
   }, [user, runCloudSync])
 
+  // Initialize and load credentials on mount and when user changes
   useEffect(() => {
     let isMounted = true
+    syncedWorkspacesRef.current.clear()
 
     const initialize = async () => {
       await loadCredentials()
       if (isMounted) {
-        await checkCloudStatus()
+        if (user && user.uid) {
+          void runCloudSync(true)
+        } else {
+          setCloudStatus('local')
+          setWorkspaceSyncStatuses({})
+        }
       }
     }
 
@@ -356,25 +273,21 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
       isMounted = false
       offUpdate?.()
     }
-  }, [user?.uid]) // Stable dependency: only triggers on user switch or mount
+  }, [user?.uid, runCloudSync, loadCredentials])
 
-  // Synchronize newly added or switched workspaces if cloud is already unlocked
+  // Synchronize newly added or switched workspaces
   useEffect(() => {
-    if (!isUnlocked || !user || !user.uid || !userCryptoRef.current) return
+    if (!user || !user.uid) return
     const unsynced = workspaces.filter((ws) => !syncedWorkspacesRef.current.has(ws.id))
     if (unsynced.length > 0 && !isSyncingRef.current) {
-      void runCloudSync(userCryptoRef.current)
+      void runCloudSync(false)
     }
-  }, [workspaces, isUnlocked, user, runCloudSync])
+  }, [workspaces, user, runCloudSync])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (setupModalOpen) {
-          setSetupModalOpen(false)
-        } else if (unlockModalOpen) {
-          setUnlockModalOpen(false)
-        } else if (editingCred) {
+        if (editingCred) {
           setEditingCred(null)
         } else {
           onClose()
@@ -383,141 +296,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [setupModalOpen, unlockModalOpen, editingCred, onClose])
-
-  // Master Password Setup Handler
-  const handleCreateMasterPassword = async () => {
-    setSetupError(null)
-    const trimmed = setupPass.trim()
-    if (trimmed.length < 6) {
-      setSetupError('Master password must be at least 6 characters.')
-      return
-    }
-    if (setupPass !== setupConfirm) {
-      setSetupError('Passwords do not match. Please confirm your master password.')
-      return
-    }
-
-    setSetupLoading(true)
-    try {
-      // Check if user already has password_crypto in Firestore
-      const lookup = await getUserPasswordCryptoResult(user)
-      if (lookup.status === 'found' && lookup.metadata) {
-        setUserCrypto(lookup.metadata)
-        userCryptoRef.current = lookup.metadata
-        setCloudStatus('locked')
-        setSetupModalOpen(false)
-        setUnlockModalOpen(true)
-        showToast('Encryption already configured. Please unlock with your master password.')
-        return
-      }
-
-      if (lookup.status === 'permission_denied') {
-        setSetupError(
-          lookup.error || 'Missing or insufficient permissions. Please publish Firestore security rules.'
-        )
-        return
-      }
-
-      if (lookup.status === 'unavailable') {
-        setSetupError('Firestore is currently offline or unreachable. Please try again when online.')
-        return
-      }
-
-      if (lookup.status === 'error') {
-        setSetupError(lookup.error || 'Failed to check existing encryption configuration.')
-        return
-      }
-
-      const res = await window.socialHub.setupCloudPassword(trimmed)
-      if (!res?.metadata) {
-        throw new Error('Could not generate cloud encryption metadata.')
-      }
-
-      // Save metadata in Firestore user doc and verify write
-      const syncResult = await syncUserPasswordCrypto(user, res.metadata)
-      if (!syncResult.success) {
-        // DO NOT report success or mark as unlocked on failure
-        setSetupError(syncResult.error || 'Failed to save encryption metadata to Firestore.')
-        return
-      }
-
-      setUserCrypto(res.metadata)
-      userCryptoRef.current = res.metadata
-      setIsUnlocked(true)
-      setCloudStatus('unlocked')
-      setSetupModalOpen(false)
-      setSetupPass('')
-      setSetupConfirm('')
-      showToast('Master password configured. Cloud synchronization enabled.')
-
-      // Automatically migrate all existing local credentials to cloud
-      void runCloudSync(res.metadata, true)
-    } catch (err) {
-      console.error('[PASSWORDS][SETUP] Failed to set up master password:', err)
-      setSetupError(err instanceof Error ? err.message : 'Setup failed. Please try again.')
-    } finally {
-      setSetupLoading(false)
-    }
-  }
-
-  // Master Password Unlock Handler
-  const handleUnlockMasterPassword = async () => {
-    setUnlockError(null)
-    let meta = userCryptoRef.current ?? userCrypto
-    if (!meta) {
-      const lookup = await getUserPasswordCryptoResult(user)
-      if (lookup.status === 'found' && lookup.metadata) {
-        meta = lookup.metadata
-        setUserCrypto(meta)
-        userCryptoRef.current = meta
-      } else if (lookup.status === 'permission_denied') {
-        setUnlockError(lookup.error || 'Permission denied reading encryption metadata.')
-        return
-      } else {
-        setUnlockError('Cloud encryption metadata not found.')
-        return
-      }
-    }
-    if (!unlockPass) {
-      setUnlockError('Please enter your master password.')
-      return
-    }
-
-    setUnlockLoading(true)
-    try {
-      const res = await window.socialHub.unlockCloudPassword(unlockPass, meta)
-      if (res?.success) {
-        setIsUnlocked(true)
-        setCloudStatus('unlocked')
-        setUnlockModalOpen(false)
-        setUnlockPass('')
-        showToast('Password Manager unlocked.')
-        void runCloudSync(meta, true)
-      } else {
-        setUnlockError('Incorrect master password. Please try again.')
-      }
-    } catch (err) {
-      console.error('[PASSWORDS][UNLOCK] Unlock failed:', err)
-      setUnlockError('Incorrect master password or corrupted key. Please try again.')
-    } finally {
-      setUnlockLoading(false)
-    }
-  }
-
-  // Lock Handler
-  const handleLock = async () => {
-    try {
-      await window.socialHub.lockCloudPassword()
-      setIsUnlocked(false)
-      setCloudStatus('locked')
-      syncedWorkspacesRef.current.clear()
-      setWorkspaceSyncStatuses({})
-      showToast('Password Manager locked.')
-    } catch (err) {
-      console.error('[PASSWORDS][LOCK] Lock error:', err)
-    }
-  }
+  }, [editingCred, onClose])
 
   // Filtered credentials based on search
   const filteredCredentials = useMemo(() => {
@@ -649,8 +428,8 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
       setEditingCred(null)
       await loadCredentials()
 
-      // If cloud is unlocked, sync the updated credential to Firestore
-      if (isUnlocked && user) {
+      // If user is authenticated, sync the updated credential to Firestore
+      if (user && editingCred.workspaceId) {
         const encryptedRecord = await window.socialHub.encryptCredentialForCloud(editingCred.id)
         if (encryptedRecord) {
           const db = getFirebaseFirestore()
@@ -693,8 +472,8 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
       showToast('Password deleted.')
       await loadCredentials()
 
-      // If cloud is unlocked, remove from Firestore ws_passwords
-      if (isUnlocked && user && cred.workspaceId) {
+      // If user is authenticated, remove from Firestore ws_passwords
+      if (user && cred.workspaceId) {
         try {
           const db = getFirebaseFirestore()
           const wsDocRef = doc(db, WORKSPACES_COLLECTION, cred.workspaceId)
@@ -738,66 +517,33 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
 
         {/* Cloud Sync Status Indicator */}
         <div className="passwords-sync-control" role="region" aria-label="Cloud sync status">
-          {cloudStatus === 'unconfigured' ? (
-            <button
-              type="button"
-              className="passwords-sync-pill unconfigured"
-              onClick={() => {
-                setSetupPass('')
-                setSetupConfirm('')
-                setSetupError(null)
-                setSetupModalOpen(true)
-              }}
-              title="Set up master password to enable end-to-end encrypted cloud sync"
-            >
+          {!user ? (
+            <span className="passwords-sync-pill unconfigured" title="Local machine storage only">
               <CloudOff size={13} />
-              <span>Enable Cloud Sync</span>
-            </button>
-          ) : cloudStatus === 'locked' ? (
-            <button
-              type="button"
-              className="passwords-sync-pill locked"
-              onClick={() => {
-                setUnlockPass('')
-                setUnlockError(null)
-                setUnlockModalOpen(true)
-              }}
-              title="Unlock to synchronize cloud credentials"
-            >
-              <Lock size={13} />
-              <span>Unlock Sync</span>
-            </button>
+              <span>Local Only</span>
+            </span>
           ) : cloudStatus === 'syncing' ? (
             <span className="passwords-sync-pill syncing">
               <RefreshCw size={13} className="passwords-spin-icon" />
               <span>Syncing...</span>
             </span>
-          ) : cloudStatus === 'unlocked' ? (
+          ) : cloudStatus === 'synced' ? (
             <div className="passwords-sync-group">
               <span
                 className="passwords-sync-pill synced"
-                title={allWorkspacesSynced ? 'Credentials encrypted with AES-256-GCM and synced to cloud' : 'Cloud unlocked'}
+                title="Credentials synchronized with Firestore"
               >
                 <ShieldCheck size={13} />
-                <span>{allWorkspacesSynced ? 'Cloud Synced' : 'Cloud Unlocked'}</span>
+                <span>Cloud Synced</span>
               </span>
               <button
                 type="button"
                 className="passwords-sync-action-btn"
-                onClick={() => void runCloudSync(userCryptoRef.current, true)}
+                onClick={() => void runCloudSync(true)}
                 title="Synchronize now"
                 aria-label="Synchronize now"
               >
                 <RefreshCw size={12} />
-              </button>
-              <button
-                type="button"
-                className="passwords-sync-action-btn"
-                onClick={() => void handleLock()}
-                title="Lock Password Manager"
-                aria-label="Lock Password Manager"
-              >
-                <Lock size={12} />
               </button>
             </div>
           ) : (
@@ -805,26 +551,11 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
               <button
                 type="button"
                 className="passwords-sync-pill error"
-                onClick={() => {
-                  if (userCryptoRef.current) {
-                    void runCloudSync(userCryptoRef.current, true)
-                  } else {
-                    void checkCloudStatus()
-                  }
-                }}
+                onClick={() => void runCloudSync(true)}
                 title={syncError || 'Sync failed. Click to retry.'}
               >
                 <AlertCircle size={13} />
-                <span>{syncError && syncError.includes('permission') ? 'Permission Error (Retry)' : 'Sync Error (Retry)'}</span>
-              </button>
-              <button
-                type="button"
-                className="passwords-sync-action-btn"
-                onClick={() => void handleLock()}
-                title="Lock Password Manager"
-                aria-label="Lock Password Manager"
-              >
-                <Lock size={12} />
+                <span>Sync Failed (Retry)</span>
               </button>
             </div>
           )}
@@ -917,15 +648,15 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
                       saved
                     </span>
                     {(() => {
-                      const wsStatus = workspaceSyncStatuses[ws.workspaceId] || (isUnlocked ? 'pending' : 'local')
+                      const wsStatus = workspaceSyncStatuses[ws.workspaceId] || (user ? 'syncing' : 'local')
                       const err = workspaceSyncErrors[ws.workspaceId]
                       if (wsStatus === 'synced') {
                         return (
                           <span
                             className="passwords-storage-badge cloud-synced"
-                            title="Credentials are encrypted with zero-knowledge AES-256-GCM and verified in cloud"
+                            title="Credentials synchronized to Firestore"
                           >
-                            E2EE Cloud
+                            Cloud Synced
                           </span>
                         )
                       }
@@ -936,16 +667,6 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
                             title="Synchronizing credentials with cloud..."
                           >
                             Syncing...
-                          </span>
-                        )
-                      }
-                      if (wsStatus === 'pending') {
-                        return (
-                          <span
-                            className="passwords-storage-badge pending"
-                            title="Password Manager unlocked; credentials pending cloud sync"
-                          >
-                            Sync Pending
                           </span>
                         )
                       }
@@ -1081,171 +802,6 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
           </div>
         )}
       </div>
-
-      {/* Set Up Master Password Modal */}
-      {setupModalOpen && (
-        <div className="hub-dialog-backdrop" onClick={() => !setupLoading && setSetupModalOpen(false)}>
-          <div
-            className="hub-dialog passwords-crypto-dialog"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="setup-master-title"
-          >
-            <div className="hub-dialog-header">
-              <h3 id="setup-master-title">Set Up Master Password</h3>
-              <button
-                className="hub-dialog-close"
-                onClick={() => !setupLoading && setSetupModalOpen(false)}
-                title="Cancel"
-                aria-label="Cancel"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="hub-dialog-body">
-              <p className="passwords-dialog-desc">
-                Your master password encrypts all saved credentials using zero-knowledge AES-256-GCM before synchronizing to Firebase Firestore.
-              </p>
-
-              <div className="passwords-warning-box">
-                <AlertCircle size={15} className="passwords-warning-icon" />
-                <span>
-                  <strong>Important:</strong> Social HUB never stores your master password. If you lose your master password, your cloud-encrypted credentials cannot be recovered without a separately implemented recovery mechanism.
-                </span>
-              </div>
-
-              {setupError && <div className="passwords-dialog-error">{setupError}</div>}
-
-              <label className="hub-dialog-field-label">Master Password (minimum 6 characters)</label>
-              <div className="hub-dialog-password-input-wrap">
-                <input
-                  type={setupShowPass ? 'text' : 'password'}
-                  value={setupPass}
-                  onChange={(e) => setSetupPass(e.target.value)}
-                  placeholder="Enter a strong master password"
-                  autoFocus
-                  disabled={setupLoading}
-                />
-                <button
-                  type="button"
-                  className="hub-dialog-password-toggle"
-                  onClick={() => setSetupShowPass(!setupShowPass)}
-                  title={setupShowPass ? 'Hide password' : 'Show password'}
-                >
-                  {setupShowPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-
-              <label className="hub-dialog-field-label">Confirm Master Password</label>
-              <div className="hub-dialog-password-input-wrap">
-                <input
-                  type={setupShowPass ? 'text' : 'password'}
-                  value={setupConfirm}
-                  onChange={(e) => setSetupConfirm(e.target.value)}
-                  placeholder="Re-enter your master password"
-                  disabled={setupLoading}
-                />
-              </div>
-            </div>
-
-            <div className="hub-dialog-actions">
-              <button
-                type="button"
-                className="hub-dialog-cancel"
-                onClick={() => setSetupModalOpen(false)}
-                disabled={setupLoading}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="hub-dialog-submit"
-                onClick={() => void handleCreateMasterPassword()}
-                disabled={setupLoading}
-              >
-                {setupLoading ? 'Encrypting & Enabling...' : 'Enable Cloud Sync'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Unlock Master Password Modal */}
-      {unlockModalOpen && (
-        <div className="hub-dialog-backdrop" onClick={() => !unlockLoading && setUnlockModalOpen(false)}>
-          <div
-            className="hub-dialog passwords-crypto-dialog"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="unlock-master-title"
-          >
-            <div className="hub-dialog-header">
-              <h3 id="unlock-master-title">Unlock Password Manager Cloud Sync</h3>
-              <button
-                className="hub-dialog-close"
-                onClick={() => !unlockLoading && setUnlockModalOpen(false)}
-                title="Cancel"
-                aria-label="Cancel"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="hub-dialog-body">
-              <p className="passwords-dialog-desc">
-                Enter your master password to decrypt your cloud credentials and enable cross-device synchronization.
-              </p>
-
-              {unlockError && <div className="passwords-dialog-error">{unlockError}</div>}
-
-              <label className="hub-dialog-field-label">Master Password</label>
-              <div className="hub-dialog-password-input-wrap">
-                <input
-                  type={unlockShowPass ? 'text' : 'password'}
-                  value={unlockPass}
-                  onChange={(e) => setUnlockPass(e.target.value)}
-                  placeholder="Enter your master password"
-                  autoFocus
-                  disabled={unlockLoading}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void handleUnlockMasterPassword()
-                  }}
-                />
-                <button
-                  type="button"
-                  className="hub-dialog-password-toggle"
-                  onClick={() => setUnlockShowPass(!unlockShowPass)}
-                  title={unlockShowPass ? 'Hide password' : 'Show password'}
-                >
-                  {unlockShowPass ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
-            </div>
-
-            <div className="hub-dialog-actions">
-              <button
-                type="button"
-                className="hub-dialog-cancel"
-                onClick={() => setUnlockModalOpen(false)}
-                disabled={unlockLoading}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="hub-dialog-submit"
-                onClick={() => void handleUnlockMasterPassword()}
-                disabled={unlockLoading}
-              >
-                {unlockLoading ? 'Verifying...' : 'Unlock & Sync'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Edit Credential Modal Dialog */}
       {editingCred && (

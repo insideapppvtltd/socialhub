@@ -9,6 +9,7 @@ import {
   updateDoc,
   deleteDoc,
   runTransaction,
+  serverTimestamp,
   type Firestore
 } from 'firebase/firestore'
 import type { User } from 'firebase/auth'
@@ -29,9 +30,12 @@ export interface FirestoreWorkspaceDocument {
   ws_id: string
   ws_owner_id: string
   ws_accounts: FirestoreAccountItem[]
-  ws_passwords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord)[]
+  ws_passwords: FirestorePasswordRecord[]
   ws_status: number
   ws_users_ids: string[]
+  ws_at_created?: any
+  ws_at_updated?: any
+  ws_at_last_visit?: any
 }
 
 const LOCAL_WORKSPACE_OWNERS_KEY = 'socialhub_workspace_owners'
@@ -165,7 +169,10 @@ export async function syncWorkspaceCreation(
       ws_accounts: initialAccounts,
       ws_passwords: [],
       ws_status: 1,
-      ws_users_ids: [user.uid]
+      ws_users_ids: [user.uid],
+      ws_at_created: serverTimestamp(),
+      ws_at_updated: serverTimestamp(),
+      ws_at_last_visit: serverTimestamp()
     }
 
     await setDoc(docRef, newWorkspaceDoc)
@@ -273,7 +280,18 @@ export async function syncAccountAddition(
         existingAccounts.push(item)
       }
 
-      txn.update(docRef, { ws_accounts: existingAccounts })
+      const updates: Record<string, any> = {
+        ws_accounts: existingAccounts,
+        ws_at_updated: serverTimestamp()
+      }
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_last_visit) {
+        updates.ws_at_last_visit = serverTimestamp()
+      }
+
+      txn.update(docRef, updates)
     })
 
     console.log(
@@ -329,15 +347,25 @@ export async function syncAccountUpdate(
           ws_acc_name: account.name !== undefined ? account.name : existingAccounts[idx].ws_acc_name,
           ws_acc_link: account.url !== undefined ? account.url : existingAccounts[idx].ws_acc_link
         }
-        txn.update(docRef, { ws_accounts: existingAccounts })
       } else {
         existingAccounts.push({
           ws_acc_id: account.id,
           ws_acc_name: account.name || '',
           ws_acc_link: account.url || ''
         })
-        txn.update(docRef, { ws_accounts: existingAccounts })
       }
+
+      const updates: Record<string, any> = {
+        ws_accounts: existingAccounts,
+        ws_at_updated: serverTimestamp()
+      }
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_last_visit) {
+        updates.ws_at_last_visit = serverTimestamp()
+      }
+      txn.update(docRef, updates)
     })
 
     console.log(
@@ -385,7 +413,17 @@ export async function syncAccountRemoval(
 
       const existingAccounts: FirestoreAccountItem[] = Array.isArray(data.ws_accounts) ? [...data.ws_accounts] : []
       const filtered = existingAccounts.filter((a) => a.ws_acc_id !== accountId)
-      txn.update(docRef, { ws_accounts: filtered })
+      const updates: Record<string, any> = {
+        ws_accounts: filtered,
+        ws_at_updated: serverTimestamp()
+      }
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_last_visit) {
+        updates.ws_at_last_visit = serverTimestamp()
+      }
+      txn.update(docRef, updates)
     })
 
     console.log(
@@ -449,6 +487,20 @@ export async function syncUserWorkspaces(
       remoteWorkspaces.push(data)
       setLocalWorkspaceOwner(data.ws_id, user.uid)
 
+      const docRef = doc(db, WORKSPACES_COLLECTION, data.ws_id)
+      const updates: Record<string, any> = {}
+
+      // Existing workspace migration: safely add missing timestamp fields without modifying existing values
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_updated) {
+        updates.ws_at_updated = serverTimestamp()
+      }
+      if (!data.ws_at_last_visit) {
+        updates.ws_at_last_visit = serverTimestamp()
+      }
+
       // If workspace is also loaded locally, synchronize accounts
       const localWs = localWorkspaces.find((w) => w.id === data.ws_id)
       if (localWs) {
@@ -456,10 +508,16 @@ export async function syncUserWorkspaces(
           .filter((a) => a.workspaceId === localWs.id)
           .map(mapAccountToFirestore)
         const mergedAccounts = mergeAccountLists(data.ws_accounts || [], accountsInWorkspace)
-        const docRef = doc(db, WORKSPACES_COLLECTION, data.ws_id)
-        await updateDoc(docRef, { ws_accounts: mergedAccounts })
+        if (JSON.stringify(mergedAccounts) !== JSON.stringify(data.ws_accounts || [])) {
+          updates.ws_accounts = mergedAccounts
+          updates.ws_at_updated = serverTimestamp()
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(docRef, updates)
         console.log(
-          `[FIRESTORE][WORKSPACES][UPDATE] Project: ${FIREBASE_PROJECT_ID} | Synchronized accounts for workspace: ${data.ws_id}`
+          `[FIRESTORE][WORKSPACES][UPDATE] Project: ${FIREBASE_PROJECT_ID} | Synchronized workspace ${data.ws_id} with updates: ${Object.keys(updates).join(', ')}`
         )
       }
     }
@@ -496,42 +554,36 @@ export async function syncWorkspacePasswords(
     return { synced: false, reason: 'Invalid passwords format' }
   }
 
-  // Strict E2EE validation: all records must contain encrypted envelope payload
+  // Plaintext Firestore credential schema validation
+  const formattedPasswords: FirestorePasswordRecord[] = []
   for (const p of passwords) {
-    if (!p || typeof p !== 'object' || !p.credential_id) {
+    if (!p || typeof p !== 'object') {
       return {
         synced: false,
-        reason: 'Invalid password record format: missing credential_id.'
+        reason: 'Invalid password record format: record is not an object.'
       }
     }
 
     const rec = p as any
-    // New format: pass_link, pass_name, pass_value
-    const isNewFormat =
-      typeof rec.pass_link === 'string' &&
-      typeof rec.pass_name === 'string' &&
-      typeof rec.pass_value === 'string' &&
-      rec.pass_value.trim().length > 0
-
-    // Legacy format fallback: encryption_version === 1, iv, ciphertext, auth_tag
-    const isLegacyFormat =
-      rec.encryption_version === 1 &&
-      Boolean(rec.iv) &&
-      Boolean(rec.ciphertext) &&
-      Boolean(rec.auth_tag)
-
-    if (!isNewFormat && !isLegacyFormat) {
+    const credId = String(rec.cred_id || rec.credential_id || '').trim()
+    if (!credId) {
       return {
         synced: false,
-        reason:
-          'Portable end-to-end encryption key management is not configured. Plaintext and machine-bound DPAPI passwords cannot be synchronized.'
+        reason: 'Invalid password record format: missing cred_id.'
       }
     }
+
+    formattedPasswords.push({
+      cred_id: credId,
+      pass_link: typeof rec.pass_link === 'string' ? rec.pass_link.trim() : '',
+      pass_name: typeof rec.pass_name === 'string' ? rec.pass_name.trim() : '',
+      pass_value: typeof rec.pass_value === 'string' ? rec.pass_value : ''
+    })
   }
 
   try {
     console.log(
-      `[FIRESTORE][WORKSPACES][PASSWORDS][START] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | RecordsCount: ${passwords.length}`
+      `[FIRESTORE][WORKSPACES][PASSWORDS][START] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | RecordsCount: ${formattedPasswords.length}`
     )
     const db = firestoreInstance || getFirebaseFirestore()
     const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
@@ -550,9 +602,20 @@ export async function syncWorkspacePasswords(
       return { synced: false, reason: 'Unauthorized' }
     }
 
-    await updateDoc(docRef, { ws_passwords: passwords })
+    const updates: Record<string, any> = {
+      ws_passwords: formattedPasswords,
+      ws_at_updated: serverTimestamp()
+    }
+    if (!data.ws_at_created) {
+      updates.ws_at_created = serverTimestamp()
+    }
+    if (!data.ws_at_last_visit) {
+      updates.ws_at_last_visit = serverTimestamp()
+    }
+
+    await updateDoc(docRef, updates)
     console.log(
-      `[FIRESTORE][WORKSPACES][PASSWORDS][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Verified written: ${passwords.length} encrypted records`
+      `[FIRESTORE][WORKSPACES][PASSWORDS][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Verified written: ${formattedPasswords.length} plaintext records`
     )
     return { synced: true, reason: 'Passwords synchronized successfully' }
   } catch (error) {
@@ -561,5 +624,100 @@ export async function syncWorkspacePasswords(
       `[FIRESTORE][WORKSPACES][PASSWORDS][ERROR] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Message: ${errMsg}`
     )
     return { synced: false, reason: errMsg }
+  }
+}
+
+/**
+ * Updates ws_at_updated timestamp when workspace metadata (such as name) changes.
+ */
+export async function syncWorkspaceMetadataUpdate(
+  user: User | null,
+  workspaceId: string,
+  firestoreInstance?: Firestore
+): Promise<boolean> {
+  if (!user || !user.uid || !workspaceId) return false
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) return false
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (!isAuthorizedUser(user.uid, data)) return false
+
+    const updates: Record<string, any> = {
+      ws_at_updated: serverTimestamp()
+    }
+    if (!data.ws_at_created) {
+      updates.ws_at_created = serverTimestamp()
+    }
+    if (!data.ws_at_last_visit) {
+      updates.ws_at_last_visit = serverTimestamp()
+    }
+    await updateDoc(docRef, updates)
+    console.log(
+      `[FIRESTORE][WORKSPACES][METADATA_UPDATE] Project: ${FIREBASE_PROJECT_ID} | Workspace: ${workspaceId} | Updated ws_at_updated`
+    )
+    return true
+  } catch (err) {
+    console.error(`[FIRESTORE][WORKSPACES][METADATA_UPDATE][ERROR] Workspace: ${workspaceId}:`, err)
+    return false
+  }
+}
+
+let lastVisitedWorkspaceId: string | null = null
+let lastVisitedTimestamp = 0
+
+export function resetWorkspaceVisitCache(): void {
+  lastVisitedWorkspaceId = null
+  lastVisitedTimestamp = 0
+}
+
+/**
+ * Updates ws_at_last_visit timestamp when the user opens or switches to a workspace.
+ * Only updates the workspace being visited and does NOT modify ws_at_created.
+ * Debounced per workspace to avoid excessive writes during frequent React re-renders.
+ */
+export async function syncWorkspaceLastVisit(
+  user: User | null,
+  workspaceId: string,
+  firestoreInstance?: Firestore,
+  force = false
+): Promise<boolean> {
+  if (!user || !user.uid || !workspaceId) return false
+  const now = Date.now()
+  if (!force && lastVisitedWorkspaceId === workspaceId && now - lastVisitedTimestamp < 15000) {
+    return true
+  }
+
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) return false
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (!isAuthorizedUser(user.uid, data)) return false
+
+    const updates: Record<string, any> = {
+      ws_at_last_visit: serverTimestamp()
+    }
+    if (!data.ws_at_created) {
+      updates.ws_at_created = serverTimestamp()
+    }
+    if (!data.ws_at_updated) {
+      updates.ws_at_updated = serverTimestamp()
+    }
+    await updateDoc(docRef, updates)
+    lastVisitedWorkspaceId = workspaceId
+    lastVisitedTimestamp = Date.now()
+    console.log(
+      `[FIRESTORE][WORKSPACES][VISIT] Project: ${FIREBASE_PROJECT_ID} | Workspace: ${workspaceId} | UID: ${user.uid} | Updated ws_at_last_visit`
+    )
+    return true
+  } catch (error) {
+    console.error(
+      `[FIRESTORE][WORKSPACES][VISIT][ERROR] Workspace: ${workspaceId} | UID: ${user.uid}:`,
+      error
+    )
+    return false
   }
 }

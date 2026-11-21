@@ -36,10 +36,11 @@ export interface UserPasswordCryptoMetadata {
 }
 
 export interface FirestorePasswordRecord {
-  credential_id: string
+  cred_id: string
   pass_link: string
   pass_name: string
   pass_value: string
+  credential_id?: string
 }
 
 export interface CloudEncryptedCredentialRecord {
@@ -277,6 +278,7 @@ export function encryptCloudCredential(
   }
 
   return {
+    cred_id: record.id,
     credential_id: record.id,
     pass_link: record.origin,
     pass_name: record.username,
@@ -335,7 +337,8 @@ export function decryptCloudCredential(
     throw new Error('Invalid nonce or authentication tag size.')
   }
 
-  const aad = buildCredentialAad(workspaceId, cloudRecord.credential_id)
+  const recordId = (cloudRecord as any).credential_id || (cloudRecord as any).cred_id || ''
+  const aad = buildCredentialAad(workspaceId, recordId)
 
   try {
     const decipher = crypto.createDecipheriv('aes-256-gcm', dek, iv)

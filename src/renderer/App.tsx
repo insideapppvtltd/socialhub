@@ -44,6 +44,8 @@ import {
   syncUserWorkspaces,
   syncWorkspaceCreation,
   syncWorkspaceDeletion,
+  syncWorkspaceLastVisit,
+  syncWorkspaceMetadataUpdate,
   syncAccountAddition,
   syncAccountUpdate,
   syncAccountRemoval,
@@ -206,12 +208,15 @@ export default function App() {
   const submitRenameWorkspace = useCallback(async (id: string, name: string) => {
     try {
       const ws = await window.socialHub.renameWorkspace(id, name)
+      if (firebaseUser) {
+        void syncWorkspaceMetadataUpdate(firebaseUser, id)
+      }
       setDialog(null)
       showToast(`Workspace renamed to “${ws.name}”.`)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not rename workspace.')
     }
-  }, [showToast])
+  }, [firebaseUser, showToast])
 
   const submitDeleteWorkspace = useCallback(async (id: string) => {
     try {
@@ -339,6 +344,13 @@ export default function App() {
     ? (state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0])
     : null
   const currentWorkspaceId = activeWorkspace?.id ?? null
+
+  // Whenever the active workspace is visited or switched by the authenticated user, update ws_at_last_visit
+  useEffect(() => {
+    if (firebaseUser && currentWorkspaceId) {
+      void syncWorkspaceLastVisit(firebaseUser, currentWorkspaceId)
+    }
+  }, [firebaseUser, currentWorkspaceId])
   const workspaceAccounts = activeWorkspace
     ? state.accounts.filter((account) => account.workspaceId === currentWorkspaceId)
     : []
@@ -372,6 +384,9 @@ export default function App() {
         const targetWorkspace = state.workspaces.find((w) => w.id === notif.workspaceId)
         if (targetWorkspace) {
           await window.socialHub.activateWorkspace(targetWorkspace.id)
+          if (firebaseUser) {
+            void syncWorkspaceLastVisit(firebaseUser, targetWorkspace.id, undefined, true)
+          }
         }
       }
       await window.socialHub.activateAccount(targetAccount.id)
@@ -555,6 +570,9 @@ export default function App() {
                           setWorkspaceMenuOpen(false)
                           setPasswordsOpen(false)
                           setNotificationsOpen(false)
+                          if (firebaseUser) {
+                            void syncWorkspaceLastVisit(firebaseUser, ws.id, undefined, true)
+                          }
                           void window.socialHub.activateWorkspace(ws.id).catch((err: unknown) => {
                             showToast(err instanceof Error ? err.message : 'Could not switch workspace.')
                           })

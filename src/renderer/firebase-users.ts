@@ -217,6 +217,18 @@ export interface PasswordCryptoLookupResult {
   error?: string
 }
 
+let inFlightCryptoLookupUid: string | null = null
+let inFlightCryptoLookupPromise: Promise<PasswordCryptoLookupResult> | null = null
+let cachedCryptoLookupUid: string | null = null
+let cachedCryptoLookupResult: PasswordCryptoLookupResult | null = null
+
+export function resetPasswordCryptoLookupCache(): void {
+  cachedCryptoLookupUid = null
+  cachedCryptoLookupResult = null
+  inFlightCryptoLookupUid = null
+  inFlightCryptoLookupPromise = null
+}
+
 /**
  * Retrieves the user's E2EE password_crypto metadata from the separate password_crypto/{uid} collection.
  * Includes backward-compatible migration from legacy users/{uid} document if not yet migrated.
@@ -226,138 +238,197 @@ export interface PasswordCryptoLookupResult {
  * - 'permission_denied': Access was denied by Firestore security rules.
  * - 'unavailable': Client is offline or Firestore is unreachable.
  * - 'error': Generic error.
+ *
+ * Implements deduplication of concurrent in-flight requests and avoids infinite retry loops on permission-denied.
  */
 export async function getUserPasswordCryptoResult(
   user: User | null,
-  firestoreInstance?: Firestore
+  firestoreInstance?: Firestore,
+  force = false
 ): Promise<PasswordCryptoLookupResult> {
   if (!user || !user.uid) {
     return { status: 'not_found', metadata: null }
   }
 
-  const db = firestoreInstance || getFirebaseFirestore()
-  const cryptoRef = doc(db, PASSWORD_CRYPTO_COLLECTION, user.uid)
-  const userRef = doc(db, USERS_COLLECTION, user.uid)
-
-  let cryptoSnap: any = null
-  let cryptoError: any = null
-
-  // 1. Attempt to read from dedicated collection password_crypto/{uid}
-  try {
-    console.log(
-      `[FIRESTORE][CRYPTO][READ][START] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Collection: password_crypto`
-    )
-    cryptoSnap = await getDoc(cryptoRef)
-    if (cryptoSnap.exists()) {
-      const meta = cryptoSnap.data() as UserPasswordCryptoMetadata
-      console.log(
-        `[FIRESTORE][CRYPTO][READ][SUCCESS] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Collection: password_crypto`
-      )
-      return { status: 'found', metadata: meta }
-    }
-  } catch (err: any) {
-    cryptoError = err
-    console.warn(
-      `[FIRESTORE][CRYPTO][READ][WARN] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Reading password_crypto failed: ${err?.message || err}`
-    )
+  // 1. If not forcing a refresh and we recently cached a permission_denied result for this UID, return it immediately
+  if (!force && cachedCryptoLookupUid === user.uid && cachedCryptoLookupResult?.status === 'permission_denied') {
+    return cachedCryptoLookupResult
   }
 
-  // 2. Fallback check: check if legacy users/{uid} document has password_crypto
-  let userSnap: any = null
-  let userError: any = null
-  try {
-    console.log(
-      `[FIRESTORE][CRYPTO][READ][FALLBACK] Checking legacy users/${user.uid} for encryption metadata...`
-    )
-    userSnap = await getDoc(userRef)
-    if (userSnap.exists()) {
-      const userData = userSnap.data() as any
-      if (userData?.password_crypto) {
-        const legacyCrypto = userData.password_crypto as UserPasswordCryptoMetadata
+  // 2. Prevent concurrent in-flight lookups for the same UID
+  if (inFlightCryptoLookupUid === user.uid && inFlightCryptoLookupPromise) {
+    return inFlightCryptoLookupPromise
+  }
+
+  inFlightCryptoLookupUid = user.uid
+  inFlightCryptoLookupPromise = (async (): Promise<PasswordCryptoLookupResult> => {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const dbId = (db as any)?._databaseId?.database || (db as any)?.databaseId || '(default)'
+    const cryptoRef = doc(db, PASSWORD_CRYPTO_COLLECTION, user.uid)
+    const userRef = doc(db, USERS_COLLECTION, user.uid)
+    const cryptoDocPath = `${PASSWORD_CRYPTO_COLLECTION}/${user.uid}`
+    const userDocPath = `${USERS_COLLECTION}/${user.uid}`
+
+    let cryptoSnap: any = null
+    let cryptoError: any = null
+
+    // 1. Separate Diagnostic: Reading password_crypto/{uid}
+    try {
+      console.log(
+        `[FIRESTORE][CRYPTO][READ][START] Database: ${dbId} | Project: ${FIREBASE_PROJECT_ID} | Collection: ${PASSWORD_CRYPTO_COLLECTION} | DocId: ${user.uid} | Path: ${cryptoDocPath} | AuthUID: ${user.uid} | Operation: getDoc`
+      )
+      cryptoSnap = await getDoc(cryptoRef)
+      if (cryptoSnap.exists()) {
+        const meta = cryptoSnap.data() as UserPasswordCryptoMetadata
         console.log(
-          `[FIRESTORE][CRYPTO][MIGRATE] Found legacy password_crypto in users/${user.uid}. Attempting migration to password_crypto/${user.uid}...`
+          `[FIRESTORE][CRYPTO][READ][SUCCESS] Database: ${dbId} | Path: ${cryptoDocPath} | AuthUID: ${user.uid} | DocExists: true | HasValidWrapping: ${Boolean(meta?.wrapping?.encryptedDek)}`
+        )
+        const result: PasswordCryptoLookupResult = { status: 'found', metadata: meta }
+        cachedCryptoLookupUid = user.uid
+        cachedCryptoLookupResult = result
+        return result
+      } else {
+        console.log(
+          `[FIRESTORE][CRYPTO][READ][NOT_FOUND] Database: ${dbId} | Path: ${cryptoDocPath} | AuthUID: ${user.uid} | Document does not exist in password_crypto collection.`
+        )
+      }
+    } catch (err: any) {
+      cryptoError = err
+      const errCode = err?.code || 'UNKNOWN'
+      const errMsg = err?.message || String(err)
+      console.warn(
+        `[FIRESTORE][CRYPTO][READ][WARN] Database: ${dbId} | Path: ${cryptoDocPath} | AuthUID: ${user.uid} | Code: ${errCode} | Message: ${errMsg}`
+      )
+    }
+
+    // 2. Separate Diagnostic: Reading users/{uid} (fallback for legacy records)
+    let userSnap: any = null
+    let userError: any = null
+    try {
+      console.log(
+        `[FIRESTORE][USERS_FALLBACK][READ][START] Database: ${dbId} | Project: ${FIREBASE_PROJECT_ID} | Collection: ${USERS_COLLECTION} | DocId: ${user.uid} | Path: ${userDocPath} | AuthUID: ${user.uid} | Operation: getDoc`
+      )
+      userSnap = await getDoc(userRef)
+      if (userSnap.exists()) {
+        const userData = userSnap.data() as any
+        const hasLegacyField = Boolean(userData && 'password_crypto' in userData && userData.password_crypto)
+
+        // 3. Separate Diagnostic: Reading the legacy password_crypto field
+        console.log(
+          `[FIRESTORE][USERS_FALLBACK][LEGACY_FIELD] Database: ${dbId} | Path: ${userDocPath} | AuthUID: ${user.uid} | DocExists: true | HasLegacyPasswordField: ${hasLegacyField}`
         )
 
-        // Attempt migration to new collection
-        try {
-          await setDoc(cryptoRef, legacyCrypto)
+        if (hasLegacyField) {
+          const legacyCrypto = userData.password_crypto as UserPasswordCryptoMetadata
           console.log(
-            `[FIRESTORE][CRYPTO][MIGRATE][SUCCESS] Successfully migrated password_crypto to separate collection.`
+            `[FIRESTORE][CRYPTO][MIGRATE][START] Found legacy password_crypto in ${userDocPath}. Attempting migration write to ${cryptoDocPath}...`
           )
 
-          // Verify write succeeded before attempting cleanup
-          const verifySnap = await getDoc(cryptoRef)
-          if (verifySnap.exists()) {
-            try {
-              await updateDoc(userRef, {
-                password_crypto: deleteField()
-              })
-              console.log(
-                `[FIRESTORE][CRYPTO][CLEANUP] Removed legacy password_crypto from users/${user.uid}`
-              )
-            } catch (cleanupErr) {
-              console.warn(
-                '[FIRESTORE][CRYPTO][CLEANUP] Could not delete legacy field from users document:',
-                cleanupErr
-              )
+          try {
+            await setDoc(cryptoRef, legacyCrypto)
+            console.log(
+              `[FIRESTORE][CRYPTO][MIGRATE][SUCCESS] Successfully migrated password_crypto to ${cryptoDocPath}.`
+            )
+
+            // Verify write succeeded before attempting cleanup
+            const verifySnap = await getDoc(cryptoRef)
+            if (verifySnap.exists()) {
+              try {
+                await updateDoc(userRef, {
+                  password_crypto: deleteField()
+                })
+                console.log(
+                  `[FIRESTORE][CRYPTO][CLEANUP] Removed legacy password_crypto field from ${userDocPath}.`
+                )
+              } catch (cleanupErr) {
+                console.warn(
+                  `[FIRESTORE][CRYPTO][CLEANUP][WARN] Could not delete legacy field from ${userDocPath}:`,
+                  cleanupErr
+                )
+              }
             }
+          } catch (migrateErr) {
+            console.warn(
+              `[FIRESTORE][CRYPTO][MIGRATE][PENDING] Migration write to ${cryptoDocPath} pending Firestore rules update in Firebase Console:`,
+              migrateErr
+            )
           }
-        } catch (migrateErr) {
-          console.warn(
-            '[FIRESTORE][CRYPTO][MIGRATE][PENDING] Migration write to password_crypto collection pending Firestore rules update in Firebase Console:',
-            migrateErr
-          )
+
+          // Legacy metadata is valid and ready to use
+          const result: PasswordCryptoLookupResult = { status: 'found', metadata: legacyCrypto }
+          cachedCryptoLookupUid = user.uid
+          cachedCryptoLookupResult = result
+          return result
         }
-
-        // Regardless of whether writing to the new collection succeeded,
-        // the user's legacy encryption metadata is present and valid!
-        return { status: 'found', metadata: legacyCrypto }
+      } else {
+        console.log(
+          `[FIRESTORE][USERS_FALLBACK][READ][NOT_FOUND] Database: ${dbId} | Path: ${userDocPath} | AuthUID: ${user.uid} | User doc does not exist.`
+        )
       }
-    }
-  } catch (err: any) {
-    userError = err
-    console.warn(
-      `[FIRESTORE][CRYPTO][READ][WARN] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Reading users doc failed: ${err?.message || err}`
-    )
-  }
-
-  // 3. Neither collection contained readable metadata. Now determine the reason:
-  const err = cryptoError || userError
-  if (err) {
-    const code = err.code || ''
-    const msg = err.message || String(err)
-    if (code === 'permission-denied' || msg.includes('permission') || msg.includes('insufficient permissions')) {
-      console.error(
-        `[FIRESTORE][CRYPTO][PERMISSION_DENIED] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid}: ${msg}`
-      )
-      return {
-        status: 'permission_denied',
-        metadata: null,
-        error: 'Missing or insufficient permissions reading encryption metadata. Please publish Firestore security rules in Firebase Console.'
-      }
-    }
-    if (code === 'unavailable' || msg.includes('offline') || msg.includes('client is offline')) {
+    } catch (err: any) {
+      userError = err
+      const errCode = err?.code || 'UNKNOWN'
+      const errMsg = err?.message || String(err)
       console.warn(
-        `[FIRESTORE][CRYPTO][UNAVAILABLE] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid}: ${msg}`
+        `[FIRESTORE][USERS_FALLBACK][READ][WARN] Database: ${dbId} | Path: ${userDocPath} | AuthUID: ${user.uid} | Code: ${errCode} | Message: ${errMsg}`
       )
+    }
+
+    // 4. Neither collection contained readable metadata. Determine exact cause:
+    const err = cryptoError || userError
+    if (err) {
+      const code = err.code || ''
+      const msg = err.message || String(err)
+      if (code === 'permission-denied' || msg.includes('permission') || msg.includes('insufficient permissions')) {
+        const failedPath = cryptoError ? cryptoDocPath : userDocPath
+        const failedOp = cryptoError ? `getDoc(${cryptoDocPath})` : `getDoc(${userDocPath})`
+        console.error(
+          `[FIRESTORE][CRYPTO][PERMISSION_DENIED] Database: ${dbId} | FailedPath: ${failedPath} | Operation: ${failedOp} | AuthUID: ${user.uid} | Code: ${code} | Message: ${msg}`
+        )
+        const result: PasswordCryptoLookupResult = {
+          status: 'permission_denied',
+          metadata: null,
+          error: 'Missing or insufficient permissions reading encryption metadata. Please publish Firestore security rules in Firebase Console.'
+        }
+        cachedCryptoLookupUid = user.uid
+        cachedCryptoLookupResult = result
+        return result
+      }
+      if (code === 'unavailable' || msg.includes('offline') || msg.includes('client is offline')) {
+        console.warn(
+          `[FIRESTORE][CRYPTO][UNAVAILABLE] Database: ${dbId} | AuthUID: ${user.uid} | Message: ${msg}`
+        )
+        return {
+          status: 'unavailable',
+          metadata: null,
+          error: 'Failed to access encryption metadata because the client is offline or Firestore is unavailable.'
+        }
+      }
       return {
-        status: 'unavailable',
+        status: 'error',
         metadata: null,
-        error: 'Failed to access encryption metadata because the client is offline or Firestore is unavailable.'
+        error: msg
       }
     }
-    return {
-      status: 'error',
-      metadata: null,
-      error: msg
+
+    // 5. Both reads succeeded cleanly with no errors, and neither contained metadata -> Genuinely not configured
+    console.log(
+      `[FIRESTORE][CRYPTO][READ][NOT_FOUND] Database: ${dbId} | AuthUID: ${user.uid} | No encryption metadata found in either collection.`
+    )
+    const result: PasswordCryptoLookupResult = { status: 'not_found', metadata: null }
+    cachedCryptoLookupUid = user.uid
+    cachedCryptoLookupResult = result
+    return result
+  })()
+
+  try {
+    return await inFlightCryptoLookupPromise
+  } finally {
+    if (inFlightCryptoLookupUid === user.uid) {
+      inFlightCryptoLookupUid = null
+      inFlightCryptoLookupPromise = null
     }
   }
-
-  // 4. Both reads succeeded cleanly with no errors, and neither contained metadata -> Genuinely not configured
-  console.log(
-    `[FIRESTORE][CRYPTO][READ][NOT_FOUND] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | No encryption metadata found in either collection.`
-  )
-  return { status: 'not_found', metadata: null }
 }
 
 /**
