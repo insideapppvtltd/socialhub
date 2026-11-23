@@ -4,8 +4,6 @@ import {
   Check,
   CloudOff,
   Copy,
-  Eye,
-  EyeOff,
   Globe,
   KeyRound,
   Layers,
@@ -38,12 +36,10 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [revealedPasswords, setRevealedPasswords] = useState<Record<string, string>>({})
   const [editingCred, setEditingCred] = useState<CredentialSummary | null>(null)
   const [editUsername, setEditUsername] = useState('')
   const [editPassword, setEditPassword] = useState('')
-  const [showEditPassword, setShowEditPassword] = useState(false)
-  const [copiedField, setCopiedField] = useState<{ id: string; field: 'username' | 'password' } | null>(null)
+  const [copiedUsernameId, setCopiedUsernameId] = useState<string | null>(null)
 
   // Cloud Sync state: 'local' | 'syncing' | 'synced' | 'failed'
   const [cloudStatus, setCloudStatus] = useState<CloudSyncState>(user ? 'syncing' : 'local')
@@ -357,62 +353,23 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
     return Array.from(wsMap.values())
   }, [filteredCredentials])
 
-  // Reveal or hide password
-  const toggleRevealPassword = async (id: string) => {
-    if (revealedPasswords[id]) {
-      setRevealedPasswords((prev) => {
-        const next = { ...prev }
-        delete next[id]
-        return next
-      })
-      return
-    }
-
-    try {
-      const pass = await window.socialHub.revealPassword(id)
-      setRevealedPasswords((prev) => ({ ...prev, [id]: pass }))
-    } catch (error) {
-      console.error('[PASSWORDS] Failed to reveal password:', error)
-      showToast('Could not reveal password.')
-    }
-  }
-
   // Copy username
   const handleCopyUsername = async (cred: CredentialSummary) => {
     try {
       await navigator.clipboard.writeText(cred.username)
-      setCopiedField({ id: cred.id, field: 'username' })
+      setCopiedUsernameId(cred.id)
       showToast('Username copied to clipboard.')
-      setTimeout(() => setCopiedField(null), 2000)
+      setTimeout(() => setCopiedUsernameId(null), 2000)
     } catch {
       showToast('Could not copy username.')
     }
   }
 
-  // Copy password
-  const handleCopyPassword = async (cred: CredentialSummary) => {
-    try {
-      await window.socialHub.copyPassword(cred.id)
-      setCopiedField({ id: cred.id, field: 'password' })
-      showToast('Password copied to clipboard.')
-      setTimeout(() => setCopiedField(null), 2000)
-    } catch {
-      showToast('Could not copy password.')
-    }
-  }
-
   // Open edit modal
-  const handleStartEdit = async (cred: CredentialSummary) => {
+  const handleStartEdit = (cred: CredentialSummary) => {
     setEditingCred(cred)
     setEditUsername(cred.username)
     setEditPassword('')
-    setShowEditPassword(false)
-    try {
-      const existingPass = await window.socialHub.revealPassword(cred.id)
-      setEditPassword(existingPass)
-    } catch {
-      // If reveal fails, leave password input blank for user to supply new one
-    }
   }
 
   // Save edit
@@ -422,7 +379,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
       await window.socialHub.updateCredential({
         id: editingCred.id,
         username: editUsername,
-        password: editPassword || undefined
+        password: editPassword.trim() ? editPassword : undefined
       })
       showToast('Credential updated.')
       setEditingCred(null)
@@ -727,7 +684,7 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
                                           title="Copy username"
                                           aria-label="Copy username"
                                         >
-                                          {copiedField?.id === cred.id && copiedField.field === 'username' ? (
+                                          {copiedUsernameId === cred.id ? (
                                             <Check size={13} className="passwords-copied-icon" />
                                           ) : (
                                             <Copy size={13} />
@@ -741,29 +698,9 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
                                   <div className="passwords-cred-row">
                                     <span className="passwords-cred-label">Password</span>
                                     <div className="passwords-cred-value-wrap">
-                                      <span className="passwords-cred-password-text">
-                                        {revealedPasswords[cred.id] ? revealedPasswords[cred.id] : '••••••••••••'}
+                                      <span className="passwords-cred-password-text" style={{ userSelect: 'none' }}>
+                                        ••••••••••
                                       </span>
-                                      <button
-                                        className="passwords-reveal-btn"
-                                        onClick={() => void toggleRevealPassword(cred.id)}
-                                        title={revealedPasswords[cred.id] ? 'Hide password' : 'Show password'}
-                                        aria-label={revealedPasswords[cred.id] ? 'Hide password' : 'Show password'}
-                                      >
-                                        {revealedPasswords[cred.id] ? <EyeOff size={13} /> : <Eye size={13} />}
-                                      </button>
-                                      <button
-                                        className="passwords-copy-btn"
-                                        onClick={() => void handleCopyPassword(cred)}
-                                        title="Copy password"
-                                        aria-label="Copy password"
-                                      >
-                                        {copiedField?.id === cred.id && copiedField.field === 'password' ? (
-                                          <Check size={13} className="passwords-copied-icon" />
-                                        ) : (
-                                          <Copy size={13} />
-                                        )}
-                                      </button>
                                     </div>
                                   </div>
 
@@ -833,22 +770,13 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
               />
 
               <label className="hub-dialog-field-label">Password</label>
-              <div className="hub-dialog-password-input-wrap">
-                <input
-                  type={showEditPassword ? 'text' : 'password'}
-                  value={editPassword}
-                  onChange={(e) => setEditPassword(e.target.value)}
-                  placeholder="Password"
-                />
-                <button
-                  type="button"
-                  className="hub-dialog-password-toggle"
-                  onClick={() => setShowEditPassword(!showEditPassword)}
-                  title={showEditPassword ? 'Hide password' : 'Show password'}
-                >
-                  {showEditPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
+              <input
+                type="password"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+                placeholder="Leave blank to keep current password"
+                autoComplete="new-password"
+              />
             </div>
 
             <div className="hub-dialog-actions">
