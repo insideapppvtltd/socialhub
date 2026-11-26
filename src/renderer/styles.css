@@ -23,6 +23,104 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button { color: inherit; font: inherit; cursor: pointer; }
 
 .hub-shell { position: relative; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+.browser-nav-bar {
+  position: absolute;
+  top: 0;
+  left: 280px;
+  right: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+  z-index: 12;
+  user-select: none;
+}
+.browser-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.browser-nav-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background-color .14s, color .14s, opacity .14s;
+}
+.browser-nav-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.browser-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.browser-nav-url {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+}
+.browser-nav-url span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.browser-nav-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.browser-nav-copy-btn {
+  height: 26px;
+  min-width: 28px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: #1A1A1A;
+  cursor: pointer;
+  transition: background-color .14s, color .14s, border-color .14s;
+}
+[data-theme="dark"] .browser-nav-copy-btn:not(.copied) {
+  color: #FFFFFF;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .browser-nav-copy-btn:not(.copied) {
+    color: #FFFFFF;
+  }
+}
+.browser-nav-copy-btn:hover {
+  background: var(--hover);
+}
+.browser-nav-copy-btn.copied {
+  background: var(--green-soft);
+  color: var(--green);
+  border-color: transparent;
+}
+.browser-nav-copied-label {
+  font-size: 10px;
+  font-weight: 600;
+}
 .sidebar {
   position: absolute;
   inset: 0 auto 0 0;

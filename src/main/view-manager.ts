@@ -16,9 +16,9 @@ import {
 import path from 'node:path'
 import { AccountManager } from './account-manager'
 import { HubNotifications } from './notifications'
-import { SIDEBAR_WIDTH } from '../shared/layout'
+import { SIDEBAR_WIDTH, NAV_BAR_HEIGHT } from '../shared/layout'
 import { APP_CATALOG, resolvePlatformName, resolveCatalogAppId } from '../shared/apps'
-import type { Account, AccountPermissions, DownloadUpdate } from './types'
+import type { Account, AccountNavigationState, AccountPermissions, DownloadUpdate } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
 const DEFAULT_APP = APP_CATALOG[0]
@@ -57,13 +57,65 @@ function matchesOrigin(raw: string, expected: string): boolean {
   }
 }
 
+const AUTH_PROVIDER_HOSTS = new Set([
+  'accounts.google.com',
+  'login.microsoftonline.com',
+  'login.live.com',
+  'appleid.apple.com',
+  'auth0.com',
+  'okta.com'
+])
+
+function isSameAppFamily(accountUrl: string, targetUrl: string): boolean {
+  try {
+    const accHost = new URL(accountUrl).hostname.toLowerCase().replace(/^www\./, '')
+    const targetHost = new URL(targetUrl).hostname.toLowerCase().replace(/^www\./, '')
+    const baseAccHost = accHost.replace(/^(web|app|mail|teams|chat|mobile)\./, '')
+    if (targetHost === accHost || targetHost.endsWith(`.${accHost}`)) return true
+    if (baseAccHost && (targetHost === baseAccHost || targetHost.endsWith(`.${baseAccHost}`))) return true
+    // WhatsApp also uses whatsapp.net for media/auth/static links
+    if (baseAccHost === 'whatsapp.com' && (targetHost === 'whatsapp.net' || targetHost.endsWith('.whatsapp.net'))) {
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+function isAuthFlowUrl(targetUrl: string): boolean {
+  try {
+    const parsed = new URL(targetUrl)
+    const host = parsed.hostname.toLowerCase()
+    if (AUTH_PROVIDER_HOSTS.has(host)) return true
+    if (host === 'github.com' && (parsed.pathname.startsWith('/login') || parsed.pathname.startsWith('/sessions'))) {
+      return true
+    }
+    if (
+      host.endsWith('.okta.com') ||
+      host.endsWith('.auth0.com') ||
+      host.startsWith('login.') ||
+      host.startsWith('sso.') ||
+      host.startsWith('oauth.') ||
+      host.startsWith('auth.')
+    ) {
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 export class ViewManager {
   private readonly views = new Map<string, WebContentsView>()
+  private readonly tempViews = new Map<string, WebContentsView>()
   private readonly sessions = new Map<string, Session>()
   private activeId: string | null = null
   private sidebarOverlayActive = false
   private readonly unread = new Map<string, number>()
   private readonly unsupported = new Set<string>()
+  private readonly navStates = new Map<string, AccountNavigationState>()
   private readonly bounds = { x: SIDEBAR_WIDTH, y: 0, width: 0, height: 0 }
 
   constructor(
@@ -104,7 +156,9 @@ export class ViewManager {
   }
 
   accountForWebContents(contents: WebContents): string | undefined {
-    return [...this.views].find(([, view]) => view.webContents === contents)?.[0]
+    const primary = [...this.views].find(([, view]) => view.webContents === contents)?.[0]
+    if (primary) return primary
+    return [...this.tempViews].find(([, view]) => view.webContents === contents)?.[0]
   }
 
   isAccountOrigin(id: string, raw: string): boolean {
@@ -119,6 +173,20 @@ export class ViewManager {
     return !account.muted && !this.accounts.preferences().doNotDisturb && perms.notifications === 'allow'
   }
 
+  private syncViewVisibility(): void {
+    for (const [accountId, view] of this.views) {
+      const isActive = accountId === this.activeId && !this.sidebarOverlayActive
+      const tempView = this.tempViews.get(accountId)
+      if (isActive && tempView) {
+        view.setVisible(false)
+        tempView.setVisible(true)
+      } else {
+        view.setVisible(isActive)
+        if (tempView) tempView.setVisible(false)
+      }
+    }
+  }
+
   activate(id: string): void {
     if (!this.views.has(id)) throw new Error('Account view not found.')
     const account = this.accounts.get(id)
@@ -128,11 +196,10 @@ export class ViewManager {
       }
     }
     this.sidebarOverlayActive = false
-    for (const [accountId, view] of this.views) {
-      view.setVisible(accountId === id)
-    }
     this.activeId = id
+    this.syncViewVisibility()
     this.accounts.setActive(id)
+    this.updateNavigationState(id)
     this.onStateChanged()
   }
 
@@ -140,10 +207,14 @@ export class ViewManager {
     for (const view of this.views.values()) {
       view.setVisible(false)
     }
+    for (const tempView of this.tempViews.values()) {
+      tempView.setVisible(false)
+    }
     this.activeId = null
     this.accounts.setActive('')
 
     if (!uid) {
+      this.destroyAllTemporaryViews()
       this.onStateChanged()
       return
     }
@@ -176,10 +247,8 @@ export class ViewManager {
 
   switchWorkspace(workspaceId: string | null): void {
     if (!workspaceId) {
-      for (const view of this.views.values()) {
-        view.setVisible(false)
-      }
       this.activeId = null
+      this.syncViewVisibility()
       this.accounts.setActive('')
       this.onStateChanged()
       return
@@ -195,10 +264,8 @@ export class ViewManager {
     if (targetId) {
       this.activate(targetId)
     } else {
-      for (const view of this.views.values()) {
-        view.setVisible(false)
-      }
       this.activeId = null
+      this.syncViewVisibility()
       this.accounts.setActive('')
       this.onStateChanged()
     }
@@ -207,7 +274,7 @@ export class ViewManager {
   setSidebarOverlayActive(active: boolean): void {
     if (this.sidebarOverlayActive === active) return
     this.sidebarOverlayActive = active
-    if (this.activeId) this.views.get(this.activeId)?.setVisible(!active)
+    this.syncViewVisibility()
   }
 
   addAccount(
@@ -229,6 +296,7 @@ export class ViewManager {
   async removeAccount(id: string): Promise<void> {
     const account = this.accounts.get(id)
     if (!account) throw new Error('Account not found.')
+    this.destroyTemporaryView(id)
     const view = this.views.get(id)
     const accountSession = this.sessions.get(id)
     view?.setVisible(false)
@@ -251,6 +319,7 @@ export class ViewManager {
     this.sessions.delete(id)
     this.unread.delete(id)
     this.unsupported.delete(id)
+    this.navStates.delete(id)
     this.notifications.dismissAllCallsForAccount(id)
     this.accounts.remove(id)
     const nextId = this.accounts.activeId()
@@ -258,7 +327,7 @@ export class ViewManager {
     if (nextId) {
       this.activate(nextId)
     } else {
-      for (const v of this.views.values()) v.setVisible(false)
+      this.syncViewVisibility()
       this.onStateChanged()
     }
   }
@@ -266,6 +335,7 @@ export class ViewManager {
   removeAccountQuietly(id: string): void {
     const account = this.accounts.get(id)
     if (!account) return
+    this.destroyTemporaryView(id)
     const view = this.views.get(id)
     view?.setVisible(false)
     if (view) {
@@ -278,6 +348,7 @@ export class ViewManager {
     this.sessions.delete(id)
     this.unread.delete(id)
     this.unsupported.delete(id)
+    this.navStates.delete(id)
     this.notifications.dismissAllCallsForAccount(id)
     this.accounts.remove(id)
     if (this.activeId === id) {
@@ -285,10 +356,31 @@ export class ViewManager {
       this.activeId = null
       if (nextId) this.activate(nextId)
       else {
-        for (const v of this.views.values()) v.setVisible(false)
+        this.syncViewVisibility()
         this.onStateChanged()
       }
     }
+  }
+
+  destroyAllTemporaryViews(): void {
+    for (const accountId of [...this.tempViews.keys()]) {
+      this.destroyTemporaryView(accountId)
+    }
+  }
+
+  private destroyTemporaryView(accountId: string): void {
+    const tempView = this.tempViews.get(accountId)
+    if (!tempView) return
+    this.tempViews.delete(accountId)
+    try {
+      tempView.setVisible(false)
+      if (!this.window.isDestroyed()) {
+        this.window.contentView.removeChildView(tempView)
+      }
+      if (!tempView.webContents.isDestroyed()) {
+        tempView.webContents.close()
+      }
+    } catch {}
   }
 
   reconcileRemoteAccounts(
@@ -425,8 +517,185 @@ export class ViewManager {
   }
 
   reload(id: string): void {
+    const tempView = this.tempViews.get(id)
+    if (tempView && !tempView.webContents.isDestroyed()) {
+      tempView.webContents.reload()
+      this.updateNavigationState(id)
+      return
+    }
     const view = this.requireView(id)
-    view.webContents.reload()
+    if (!view.webContents.isDestroyed()) {
+      view.webContents.reload()
+      this.updateNavigationState(id)
+    }
+  }
+
+  getAccountNavigationState(id: string): AccountNavigationState | null {
+    const tempView = this.tempViews.get(id)
+    if (tempView && !tempView.webContents.isDestroyed()) {
+      return this.updateNavigationState(id)
+    }
+    const view = this.views.get(id)
+    if (!view || view.webContents.isDestroyed()) {
+      return this.navStates.get(id) ?? null
+    }
+    return this.updateNavigationState(id)
+  }
+
+  goBack(id: string): boolean {
+    const tempView = this.tempViews.get(id)
+    if (!tempView || tempView.webContents.isDestroyed()) return false
+    const contents = tempView.webContents
+    const canBack = contents.navigationHistory ? contents.navigationHistory.canGoBack() : contents.canGoBack()
+    if (canBack) {
+      if (contents.navigationHistory) {
+        contents.navigationHistory.goBack()
+      } else {
+        contents.goBack()
+      }
+      this.updateNavigationState(id)
+      return true
+    }
+    // No previous external page: close the temporary view and reveal the untouched original account view
+    this.closeTemporaryView(id)
+    return true
+  }
+
+  goForward(id: string): boolean {
+    const tempView = this.tempViews.get(id)
+    if (!tempView || tempView.webContents.isDestroyed()) return false
+    const contents = tempView.webContents
+    const canFwd = contents.navigationHistory ? contents.navigationHistory.canGoForward() : contents.canGoForward()
+    if (!canFwd) return false
+    if (contents.navigationHistory) {
+      contents.navigationHistory.goForward()
+    } else {
+      contents.goForward()
+    }
+    this.updateNavigationState(id)
+    return true
+  }
+
+  stopLoading(id: string): boolean {
+    const tempView = this.tempViews.get(id)
+    const targetView = tempView && !tempView.webContents.isDestroyed() ? tempView : this.views.get(id)
+    if (!targetView || targetView.webContents.isDestroyed()) return false
+    targetView.webContents.stop()
+    this.updateNavigationState(id)
+    return true
+  }
+
+  copyAccountUrl(id: string): string | null {
+    const tempView = this.tempViews.get(id)
+    const targetView = tempView && !tempView.webContents.isDestroyed() ? tempView : this.views.get(id)
+    const fallbackUrl = this.accounts.get(id)?.url ?? null
+    const currentUrl =
+      targetView && !targetView.webContents.isDestroyed() ? targetView.webContents.getURL() || fallbackUrl : fallbackUrl
+    if (!currentUrl) return null
+    clipboard.writeText(currentUrl)
+    return currentUrl
+  }
+
+  closeTemporaryView(accountId: string): void {
+    if (!this.tempViews.has(accountId)) return
+    this.destroyTemporaryView(accountId)
+    this.syncViewVisibility()
+    this.updateNavigationState(accountId)
+  }
+
+  private openTemporaryExternalView(accountId: string, url: string): void {
+    if (!isHttpsUrl(url)) return
+    const account = this.accounts.get(accountId)
+    if (!account) return
+
+    const existingTemp = this.tempViews.get(accountId)
+    if (existingTemp && !existingTemp.webContents.isDestroyed()) {
+      this.syncViewVisibility()
+      void existingTemp.webContents.loadURL(url)
+      this.updateNavigationState(accountId)
+      return
+    }
+    if (existingTemp) {
+      this.destroyTemporaryView(accountId)
+    }
+
+    const partition = `persist:account-${account.id}`
+    const existingSession = this.sessions.get(account.id)
+    const accountSession = existingSession ?? session.fromPartition(partition)
+    if (!existingSession) {
+      accountSession.setUserAgent(CHROME_USER_AGENT)
+      accountSession.setSpellCheckerEnabled(true)
+      this.configureSession(account.id, accountSession)
+      this.sessions.set(account.id, accountSession)
+    }
+
+    const tempView = new WebContentsView({
+      webPreferences: {
+        session: accountSession,
+        preload: path.join(__dirname, '../preload/site.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: true
+      }
+    })
+    tempView.setBackgroundColor('#ffffff')
+    tempView.setBounds(this.getTempBounds())
+    tempView.setVisible(false)
+    this.window.contentView.addChildView(tempView)
+    this.tempViews.set(accountId, tempView)
+    this.configureTempWebContents(accountId, tempView.webContents)
+    this.syncViewVisibility()
+    void tempView.webContents.loadURL(url)
+    this.updateNavigationState(accountId)
+  }
+
+  private isExternalUrlForAccount(accountId: string, url: string): boolean {
+    if (!isHttpsUrl(url)) return false
+    const account = this.accounts.get(accountId)
+    if (!account) return false
+    if (isSameAppFamily(account.url, url)) return false
+    if (isAuthFlowUrl(url)) return false
+    return true
+  }
+
+  private updateNavigationState(accountId: string): AccountNavigationState | null {
+    const tempView = this.tempViews.get(accountId)
+    if (tempView && !tempView.webContents.isDestroyed()) {
+      const contents = tempView.webContents
+      const state: AccountNavigationState = {
+        accountId,
+        hasTemporaryView: true,
+        url: contents.getURL() || '',
+        // Always allow Back on temporary view: either navigates back in temp history or closes temp view to return to original view
+        canGoBack: true,
+        canGoForward: contents.navigationHistory ? contents.navigationHistory.canGoForward() : contents.canGoForward(),
+        isLoading: contents.isLoading()
+      }
+      this.navStates.set(accountId, state)
+      if (!this.window.isDestroyed()) {
+        this.window.webContents.send('hub:navigation-state', state)
+      }
+      return state
+    }
+
+    const view = this.views.get(accountId)
+    if (!view || view.webContents.isDestroyed()) return null
+    const contents = view.webContents
+    const fallbackUrl = this.accounts.get(accountId)?.url ?? ''
+    const state: AccountNavigationState = {
+      accountId,
+      hasTemporaryView: false,
+      url: contents.getURL() || fallbackUrl,
+      canGoBack: false,
+      canGoForward: false,
+      isLoading: contents.isLoading()
+    }
+    this.navStates.set(accountId, state)
+    if (!this.window.isDestroyed()) {
+      this.window.webContents.send('hub:navigation-state', state)
+    }
+    return state
   }
 
   async clearCache(id: string): Promise<void> {
@@ -435,12 +704,23 @@ export class ViewManager {
     await accountSession.clearCache()
   }
 
+  private getTempBounds(): { x: number; y: number; width: number; height: number } {
+    return {
+      x: this.bounds.x,
+      y: NAV_BAR_HEIGHT,
+      width: this.bounds.width,
+      height: Math.max(0, this.bounds.height - NAV_BAR_HEIGHT)
+    }
+  }
+
   resize(x: number, y: number, width: number, height: number): void {
     this.bounds.x = Math.max(0, Math.round(x))
     this.bounds.y = Math.max(0, Math.round(y))
     this.bounds.width = Math.max(0, Math.round(width))
     this.bounds.height = Math.max(0, Math.round(height))
     for (const view of this.views.values()) view.setBounds(this.bounds)
+    const tempBounds = this.getTempBounds()
+    for (const tempView of this.tempViews.values()) tempView.setBounds(tempBounds)
   }
 
   resizeToContent(width: number, height: number): void {
@@ -682,7 +962,11 @@ export class ViewManager {
     })
     contents.setWindowOpenHandler(({ url }) => {
       if (isHttpsUrl(url)) {
-        void contents.loadURL(url)
+        if (this.isExternalUrlForAccount(accountId, url)) {
+          this.openTemporaryExternalView(accountId, url)
+        } else {
+          void contents.loadURL(url)
+        }
       } else {
         try {
           const parsed = new URL(url)
@@ -707,9 +991,21 @@ export class ViewManager {
         !destination.password &&
         destination.hostname !== 'localhost' &&
         !destination.hostname.endsWith('.localhost')
-      ) return
+      ) {
+        if (this.isExternalUrlForAccount(accountId, url)) {
+          event.preventDefault()
+          this.openTemporaryExternalView(accountId, url)
+        }
+        return
+      }
       event.preventDefault()
       if (externalProtocols.has(destination.protocol)) void shell.openExternal(url)
+    })
+    contents.on('will-redirect', (event, url) => {
+      if (this.isExternalUrlForAccount(accountId, url)) {
+        event.preventDefault()
+        this.openTemporaryExternalView(accountId, url)
+      }
     })
     contents.on('page-title-updated', (event, title) => {
       event.preventDefault()
@@ -753,6 +1049,95 @@ export class ViewManager {
     contents.on('render-process-gone', (_event, details) => {
       console.error(`Web view ${accountId} renderer exited: ${details.reason}`)
       this.notifications.dismissAllCallsForAccount(accountId)
+      this.updateNavigationState(accountId)
+    })
+    const syncNav = () => {
+      this.updateNavigationState(accountId)
+    }
+    contents.on('did-start-loading', syncNav)
+    contents.on('did-stop-loading', syncNav)
+    contents.on('did-navigate', syncNav)
+    contents.on('did-navigate-in-page', syncNav)
+    contents.on('did-fail-load', syncNav)
+    contents.once('destroyed', () => {
+      contents.removeListener('did-start-loading', syncNav)
+      contents.removeListener('did-stop-loading', syncNav)
+      contents.removeListener('did-navigate', syncNav)
+      contents.removeListener('did-navigate-in-page', syncNav)
+      contents.removeListener('did-fail-load', syncNav)
+    })
+  }
+
+  private configureTempWebContents(accountId: string, contents: WebContents): void {
+    contents.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return
+      const modifier = process.platform === 'darwin' ? input.meta : input.control
+      if (!modifier) return
+      if (input.key.toLowerCase() === 'r') {
+        event.preventDefault()
+        this.reload(accountId)
+      }
+    })
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isHttpsUrl(url)) {
+        void contents.loadURL(url)
+      } else {
+        try {
+          const parsed = new URL(url)
+          if (externalProtocols.has(parsed.protocol)) void shell.openExternal(url)
+        } catch {
+          // Invalid URLs are denied.
+        }
+      }
+      return { action: 'deny' }
+    })
+    contents.on('will-navigate', (event, url) => {
+      let destination: URL
+      try {
+        destination = new URL(url)
+      } catch {
+        event.preventDefault()
+        return
+      }
+      if (
+        destination.protocol === 'https:' &&
+        !destination.username &&
+        !destination.password &&
+        destination.hostname !== 'localhost' &&
+        !destination.hostname.endsWith('.localhost')
+      ) return
+      event.preventDefault()
+      if (externalProtocols.has(destination.protocol)) void shell.openExternal(url)
+    })
+    contents.on('context-menu', (_event, params) => {
+      const menu = Menu.buildFromTemplate([
+        ...(params.dictionarySuggestions ?? []).map((suggestion) => ({
+          label: suggestion,
+          click: () => contents.replaceMisspelling(suggestion)
+        })),
+        ...(params.dictionarySuggestions?.length ? [{ type: 'separator' as const }] : []),
+        { label: 'Copy', role: 'copy' as const, enabled: params.editFlags.canCopy },
+        { label: 'Paste', role: 'paste' as const, enabled: params.editFlags.canPaste },
+        ...(params.linkURL
+          ? [{ label: 'Copy link', click: () => clipboard.writeText(params.linkURL) }]
+          : [])
+      ])
+      menu.popup({ window: this.window })
+    })
+    const syncNav = () => {
+      this.updateNavigationState(accountId)
+    }
+    contents.on('did-start-loading', syncNav)
+    contents.on('did-stop-loading', syncNav)
+    contents.on('did-navigate', syncNav)
+    contents.on('did-navigate-in-page', syncNav)
+    contents.on('did-fail-load', syncNav)
+    contents.once('destroyed', () => {
+      contents.removeListener('did-start-loading', syncNav)
+      contents.removeListener('did-stop-loading', syncNav)
+      contents.removeListener('did-navigate', syncNav)
+      contents.removeListener('did-navigate-in-page', syncNav)
+      contents.removeListener('did-fail-load', syncNav)
     })
   }
 

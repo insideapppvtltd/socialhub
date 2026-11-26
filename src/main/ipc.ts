@@ -493,6 +493,31 @@ export function registerIpc(
     assertAccountId(id)
     views.reload(id)
   })
+  ipcMain.handle('hub:nav-back', (event, id: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    return views.goBack(id)
+  })
+  ipcMain.handle('hub:nav-forward', (event, id: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    return views.goForward(id)
+  })
+  ipcMain.handle('hub:nav-stop', (event, id: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    return views.stopLoading(id)
+  })
+  ipcMain.handle('hub:nav-copy-url', (event, id: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    return views.copyAccountUrl(id)
+  })
+  ipcMain.handle('hub:nav-get-state', (event, id: unknown) => {
+    guard(event)
+    assertAccountId(id)
+    return views.getAccountNavigationState(id)
+  })
   ipcMain.handle('hub:clear-cache', async (event, id: unknown) => {
     guard(event)
     assertAccountId(id)

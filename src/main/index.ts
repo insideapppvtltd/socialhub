@@ -197,6 +197,7 @@ if (!gotLock) {
     })
     app.on('before-quit', () => {
       quitting = true
+      viewManager?.destroyAllTemporaryViews()
       tray?.destroy()
     })
   })

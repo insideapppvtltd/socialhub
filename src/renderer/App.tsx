@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import hubLogo from '../assets/icon_wh_small.png'
 import {
+  ArrowLeft,
+  ArrowRight,
   ArrowUpDown,
   Bell,
   BellOff,
@@ -13,6 +15,7 @@ import {
   Download,
   KeyRound,
   Layers,
+  Link,
   LogOut,
   MapPin,
   MessageSquare,
@@ -36,7 +39,7 @@ import {
   X
 } from 'lucide-react'
 import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth'
-import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
+import type { Account, AccountNavigationState, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
 import { getFirebaseAuth, logoutUser, getFirebaseFirestore } from './firebase'
@@ -118,17 +121,34 @@ export default function App() {
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  const [navStatesByAccount, setNavStatesByAccount] = useState<Record<string, AccountNavigationState>>({})
+  const [copiedLinkAccountId, setCopiedLinkAccountId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
   const [download, setDownload] = useState<DownloadUpdate | null>(null)
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null)
   const [firebaseAuthChecked, setFirebaseAuthChecked] = useState(false)
   const toastTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const copyLinkTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const showToast = useCallback((message: string) => {
     setToast(message)
     if (toastTimeout.current) clearTimeout(toastTimeout.current)
     toastTimeout.current = setTimeout(() => setToast(''), 3200)
   }, [])
+
+  const handleCopyAccountLink = useCallback(async (accountId: string) => {
+    try {
+      const copiedUrl = await window.socialHub.navCopyUrl(accountId)
+      if (copiedUrl) {
+        setCopiedLinkAccountId(accountId)
+        if (copyLinkTimeout.current) clearTimeout(copyLinkTimeout.current)
+        copyLinkTimeout.current = setTimeout(() => setCopiedLinkAccountId(null), 1800)
+        showToast('Link copied to clipboard.')
+      }
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not copy link.')
+    }
+  }, [showToast])
 
   const addAccount = useCallback(() => {
     if (state.workspaces.length === 0) {
@@ -273,6 +293,11 @@ export default function App() {
     })
     const offDownload = window.socialHub.onDownload(setDownload)
     const offShortcut = window.socialHub.onAddAccountShortcut(() => void addAccount())
+    const offNavState = window.socialHub.onNavState?.((navState) => {
+      if (active && navState?.accountId) {
+        setNavStatesByAccount((prev) => ({ ...prev, [navState.accountId]: navState }))
+      }
+    })
     const closeMenusOutside = (event: PointerEvent) => {
       const target = event.target
       if (!(target instanceof Element)) return
@@ -290,8 +315,10 @@ export default function App() {
       offCallStatus?.()
       offDownload()
       offShortcut()
+      offNavState?.()
       document.removeEventListener('pointerdown', closeMenusOutside)
       if (toastTimeout.current) clearTimeout(toastTimeout.current)
+      if (copyLinkTimeout.current) clearTimeout(copyLinkTimeout.current)
     }
   }, [addAccount, showToast])
 
@@ -547,6 +574,20 @@ export default function App() {
       return a.id.localeCompare(b.id)
     })
   }, [activeWorkspace, state.accounts, currentWorkspaceId, accountSortBy])
+
+  const activeAccount = workspaceAccounts.find((a) => a.id === state.activeAccountId) ?? null
+  const activeNavState = activeAccount ? navStatesByAccount[activeAccount.id] : undefined
+  const activeNavUrl = activeNavState?.url || activeAccount?.url || ''
+
+  useEffect(() => {
+    const activeAccId = state.activeAccountId
+    if (!activeAccId) return
+    void window.socialHub.getNavState?.(activeAccId).then((navState) => {
+      if (navState) {
+        setNavStatesByAccount((prev) => ({ ...prev, [navState.accountId]: navState }))
+      }
+    }).catch(() => {})
+  }, [state.activeAccountId])
 
   const unreadNotificationsCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
@@ -1119,6 +1160,69 @@ export default function App() {
           </div>
         </footer>
       </aside>
+
+      {hasWorkspaces && activeAccount && activeNavState?.hasTemporaryView && !notificationsOpen && !passwordsOpen && (
+        <div className="browser-nav-bar" role="toolbar" aria-label="Account navigation controls">
+          <div className="browser-nav-actions">
+            <button
+              type="button"
+              className="browser-nav-btn"
+              onClick={() => void window.socialHub.navBack(activeAccount.id)}
+              disabled={!activeNavState?.canGoBack}
+              title="Back"
+              aria-label="Back"
+            >
+              <ArrowLeft size={14} />
+            </button>
+            <button
+              type="button"
+              className="browser-nav-btn"
+              onClick={() => void window.socialHub.navForward(activeAccount.id)}
+              disabled={!activeNavState?.canGoForward}
+              title="Forward"
+              aria-label="Forward"
+            >
+              <ArrowRight size={14} />
+            </button>
+            <button
+              type="button"
+              className="browser-nav-btn"
+              onClick={() => {
+                if (activeNavState?.isLoading) {
+                  void window.socialHub.navStop(activeAccount.id)
+                } else {
+                  void window.socialHub.reloadAccount(activeAccount.id)
+                }
+              }}
+              title={activeNavState?.isLoading ? 'Stop loading' : 'Refresh'}
+              aria-label={activeNavState?.isLoading ? 'Stop loading' : 'Refresh'}
+            >
+              {activeNavState?.isLoading ? <X size={14} /> : <RefreshCw size={13} />}
+            </button>
+          </div>
+          <div className="browser-nav-url" title={activeNavUrl}>
+            <span>{activeNavUrl}</span>
+          </div>
+          <div className="browser-nav-right">
+            <button
+              type="button"
+              className={`browser-nav-copy-btn ${copiedLinkAccountId === activeAccount.id ? 'copied' : ''}`}
+              onClick={() => void handleCopyAccountLink(activeAccount.id)}
+              title={copiedLinkAccountId === activeAccount.id ? 'Copied!' : 'Copy current link'}
+              aria-label="Copy current link"
+            >
+              {copiedLinkAccountId === activeAccount.id ? (
+                <>
+                  <Check size={13} />
+                  <span className="browser-nav-copied-label">Copied</span>
+                </>
+              ) : (
+                <Link size={14} />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
 
       {notificationsOpen && (
         <div className="notifications-panel" role="region" aria-label="Notifications Center">

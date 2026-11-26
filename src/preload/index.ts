@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, NewAccount, Preferences, Workspace } from '../main/types'
+import type { Account, AccountNavigationState, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, NewAccount, Preferences, Workspace } from '../main/types'
 import type { CredentialSummary } from '../main/password-manager'
 import type { UserPasswordCryptoMetadata, CloudEncryptedCredentialRecord, FirestorePasswordRecord } from '../main/cloud-crypto'
 
@@ -21,6 +21,12 @@ export interface SocialHubAPI {
   updateGlobalDefaultPermissions(permissions: Partial<AccountPermissions>): Promise<AccountPermissions>
   resetGlobalDefaultPermissions(): Promise<AccountPermissions>
   reloadAccount(id: string): Promise<void>
+  navBack(id: string): Promise<boolean>
+  navForward(id: string): Promise<boolean>
+  navStop(id: string): Promise<boolean>
+  navCopyUrl(id: string): Promise<string | null>
+  getNavState(id: string): Promise<AccountNavigationState | null>
+  onNavState(callback: (state: AccountNavigationState) => void): () => void
   clearCache(id: string): Promise<void>
   removeAccount(id: string): Promise<void>
   updatePreferences(preferences: Partial<Preferences>): Promise<Preferences>
@@ -81,6 +87,12 @@ const api: SocialHubAPI = {
   updateGlobalDefaultPermissions: (permissions) => ipcRenderer.invoke('hub:update-global-default-permissions', permissions),
   resetGlobalDefaultPermissions: () => ipcRenderer.invoke('hub:reset-global-default-permissions'),
   reloadAccount: (id) => ipcRenderer.invoke('hub:reload-account', id),
+  navBack: (id) => ipcRenderer.invoke('hub:nav-back', id),
+  navForward: (id) => ipcRenderer.invoke('hub:nav-forward', id),
+  navStop: (id) => ipcRenderer.invoke('hub:nav-stop', id),
+  navCopyUrl: (id) => ipcRenderer.invoke('hub:nav-copy-url', id),
+  getNavState: (id) => ipcRenderer.invoke('hub:nav-get-state', id),
+  onNavState: (callback) => subscribe('hub:navigation-state', callback),
   clearCache: (id) => ipcRenderer.invoke('hub:clear-cache', id),
   removeAccount: (id) => ipcRenderer.invoke('hub:remove-account', id),
   updatePreferences: (preferences) => ipcRenderer.invoke('hub:update-preferences', preferences),

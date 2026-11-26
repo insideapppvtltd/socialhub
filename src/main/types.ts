@@ -118,3 +118,12 @@ export interface HubState {
   preferences: Preferences
   globalDefaultPermissions: AccountPermissions
 }
+
+export interface AccountNavigationState {
+  accountId: string
+  hasTemporaryView: boolean
+  url: string
+  canGoBack: boolean
+  canGoForward: boolean
+  isLoading: boolean
+}
