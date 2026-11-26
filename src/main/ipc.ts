@@ -255,7 +255,19 @@ export function registerIpc(
     guard(event)
     return getGoogleIdToken({
       clientId: googleOAuthClientId,
-      clientSecret: googleOAuthClientSecret
+      clientSecret: googleOAuthClientSecret,
+      onFocusApp: () => {
+        if (window && !window.isDestroyed()) {
+          if (window.isMinimized()) window.restore()
+          window.show()
+          window.focus()
+          if (process.platform === 'win32') {
+            window.setAlwaysOnTop(true)
+            window.focus()
+            window.setAlwaysOnTop(false)
+          }
+        }
+      }
     })
   })
   ipcMain.handle('hub:google-auth-cancel', (event) => {
@@ -511,6 +523,13 @@ export function registerIpc(
         throw new Error(`Invalid theme: "${String(theme)}". Expected 'system', 'light', or 'dark'.`)
       }
       patch.theme = theme
+    }
+    if ('accountSortBy' in candidate) {
+      const sortBy = candidate.accountSortBy
+      if (sortBy !== 'name' && sortBy !== 'lastUsed') {
+        throw new Error(`Invalid accountSortBy: "${String(sortBy)}". Expected 'name' or 'lastUsed'.`)
+      }
+      patch.accountSortBy = sortBy
     }
     const preferences = accounts.updatePreferences(patch)
     onPreferencesChanged(preferences)

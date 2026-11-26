@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import hubLogo from '../assets/icon_wh_small.png'
 import {
+  ArrowUpDown,
   Bell,
   BellOff,
   Camera,
@@ -80,7 +81,7 @@ const initialState: HubState = {
   activeWorkspaceId: null,
   accounts: [],
   activeAccountId: null,
-  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false, theme: 'system' },
+  preferences: { doNotDisturb: false, minimizeToTray: true, launchAtStartup: false, theme: 'system', accountSortBy: 'name' },
   globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS
 }
 
@@ -116,6 +117,7 @@ export default function App() {
   const [dialog, setDialog] = useState<EditorDialog>(null)
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [sortMenuOpen, setSortMenuOpen] = useState(false)
   const [toast, setToast] = useState('')
   const [download, setDownload] = useState<DownloadUpdate | null>(null)
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null)
@@ -277,6 +279,7 @@ export default function App() {
       if (!target.closest('.tray-setting')) setTrayMenuOpen(false)
       if (!target.closest('.context-menu, .account-row')) setMenu(null)
       if (!target.closest('.workspace-dropdown-container')) setWorkspaceMenuOpen(false)
+      if (!target.closest('.account-sort-container')) setSortMenuOpen(false)
       if (!target.closest('.notifications-panel, .notifications-nav-btn')) setNotificationsOpen(false)
     }
     document.addEventListener('pointerdown', closeMenusOutside)
@@ -460,6 +463,17 @@ export default function App() {
   }, [firebaseUser, syncFirebaseData])
 
   useEffect(() => {
+    if (!sortMenuOpen) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSortMenuOpen(false)
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [sortMenuOpen])
+
+  useEffect(() => {
     try {
       return onAuthStateChanged(
         getFirebaseAuth(),
@@ -516,9 +530,23 @@ export default function App() {
       void syncWorkspaceLastVisit(firebaseUser, currentWorkspaceId)
     }
   }, [firebaseUser, currentWorkspaceId])
-  const workspaceAccounts = activeWorkspace
-    ? state.accounts.filter((account) => account.workspaceId === currentWorkspaceId)
-    : []
+  const accountSortBy = state.preferences.accountSortBy === 'lastUsed' ? 'lastUsed' : 'name'
+  const workspaceAccounts = useMemo(() => {
+    if (!activeWorkspace) return []
+    const filtered = state.accounts.filter((account) => account.workspaceId === currentWorkspaceId)
+    return [...filtered].sort((a, b) => {
+      if (accountSortBy === 'lastUsed') {
+        const aTime = typeof a.lastUsedAt === 'number' ? a.lastUsedAt : -1
+        const bTime = typeof b.lastUsedAt === 'number' ? b.lastUsedAt : -1
+        if (aTime !== bTime) return bTime - aTime
+      }
+      const nameCmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      if (nameCmp !== 0) return nameCmp
+      const createdCmp = (a.createdAt || '').localeCompare(b.createdAt || '')
+      if (createdCmp !== 0) return createdCmp
+      return a.id.localeCompare(b.id)
+    })
+  }, [activeWorkspace, state.accounts, currentWorkspaceId, accountSortBy])
 
   const unreadNotificationsCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
@@ -743,7 +771,6 @@ export default function App() {
                       >
                         <span className="ws-item-title">{ws.name}</span>
                         <span className="ws-item-count">{count}</span>
-                        {isActive && <Check size={12} className="ws-check" />}
                         <div className="ws-item-actions" onClick={(e) => e.stopPropagation()}>
                           <button
                             className="ws-action-btn"
@@ -792,6 +819,51 @@ export default function App() {
         <section className="account-section" aria-label="Web app accounts">
           <div className="section-heading">
             <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
+            {hasWorkspaces && (
+              <div className="account-sort-container">
+                <button
+                  type="button"
+                  className={`account-sort-trigger ${sortMenuOpen ? 'open' : ''}`}
+                  onClick={() => setSortMenuOpen((open) => !open)}
+                  title={`Sort accounts (${accountSortBy === 'lastUsed' ? 'Last Used' : 'Name'})`}
+                  aria-label="Sort accounts"
+                  aria-haspopup="menu"
+                  aria-expanded={sortMenuOpen}
+                >
+                  <ArrowUpDown size={12} />
+                </button>
+                {sortMenuOpen && (
+                  <div className="account-sort-menu" role="menu" aria-label="Account sorting options">
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={accountSortBy === 'name'}
+                      className={accountSortBy === 'name' ? 'selected' : ''}
+                      onClick={() => {
+                        void setPreference('accountSortBy', 'name')
+                        setSortMenuOpen(false)
+                      }}
+                    >
+                      <span>Name</span>
+                      {accountSortBy === 'name' && <Check size={12} />}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={accountSortBy === 'lastUsed'}
+                      className={accountSortBy === 'lastUsed' ? 'selected' : ''}
+                      onClick={() => {
+                        void setPreference('accountSortBy', 'lastUsed')
+                        setSortMenuOpen(false)
+                      }}
+                    >
+                      <span>Last Used</span>
+                      {accountSortBy === 'lastUsed' && <Check size={12} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <nav className="account-list">

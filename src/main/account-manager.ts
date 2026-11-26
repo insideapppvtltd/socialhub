@@ -99,7 +99,8 @@ const store = new Store<StoreData>({
       doNotDisturb: false,
       minimizeToTray: true,
       launchAtStartup: false,
-      theme: 'system'
+      theme: 'system',
+      accountSortBy: 'name'
     },
     windowBounds: { width: 1180, height: 780 },
     globalDefaultPermissions: DEFAULT_ACCOUNT_PERMISSIONS,
@@ -793,6 +794,9 @@ export class AccountManager {
   setActive(id: string): void {
     if (id && !this.get(id)) throw new Error('Account not found.')
     store.set('activeAccountId', id || null)
+    if (id) {
+      this.update(id, { lastUsedAt: Date.now() })
+    }
   }
 
   activeId(): string | null {
@@ -801,21 +805,28 @@ export class AccountManager {
 
   preferences(): Preferences {
     const raw = store.get('preferences')
+    const accountSortBy = raw?.accountSortBy === 'lastUsed' ? 'lastUsed' : 'name'
     if (!raw || (raw.theme !== 'system' && raw.theme !== 'light' && raw.theme !== 'dark')) {
       return {
         doNotDisturb: Boolean(raw?.doNotDisturb),
         minimizeToTray: raw?.minimizeToTray ?? true,
         launchAtStartup: Boolean(raw?.launchAtStartup),
-        theme: 'system'
+        theme: 'system',
+        accountSortBy
       }
     }
-    return raw
+    return { ...raw, accountSortBy }
   }
 
   updatePreferences(partial: Partial<Preferences>): Preferences {
     if (partial.theme !== undefined) {
       if (partial.theme !== 'system' && partial.theme !== 'light' && partial.theme !== 'dark') {
         throw new Error(`Invalid theme: "${String(partial.theme)}". Expected 'system', 'light', or 'dark'.`)
+      }
+    }
+    if (partial.accountSortBy !== undefined) {
+      if (partial.accountSortBy !== 'name' && partial.accountSortBy !== 'lastUsed') {
+        throw new Error(`Invalid accountSortBy: "${String(partial.accountSortBy)}". Expected 'name' or 'lastUsed'.`)
       }
     }
     const next: Preferences = { ...this.preferences(), ...partial }

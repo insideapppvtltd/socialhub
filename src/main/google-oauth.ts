@@ -7,6 +7,7 @@ import { app, shell } from 'electron'
 export interface GoogleOAuthOptions {
   clientId?: string
   clientSecret?: string
+  onFocusApp?: () => void
 }
 
 function getEnvVariable(key: string): string {
@@ -113,9 +114,19 @@ const completionPage = `<!doctype html>
   <div class="card">
     <div class="icon">&#10003;</div>
     <h2>Sign-in Complete</h2>
-    <p>You have successfully authenticated with Google. You can now close this browser tab and return to Social HUB.</p>
+    <p>You have successfully authenticated with Google. Returning to Social HUB...</p>
   </div>
-  <script>setTimeout(() => { try { window.close(); } catch {} }, 1500);</script>
+  <script>
+    (function () {
+      function tryClose() {
+        try { window.open('', '_self'); } catch {}
+        try { window.close(); } catch {}
+      }
+      tryClose();
+      setTimeout(tryClose, 300);
+      setTimeout(tryClose, 1000);
+    })();
+  </script>
 </body>
 </html>`
 
@@ -174,6 +185,8 @@ export async function getGoogleIdToken(options?: string | GoogleOAuthOptions): P
     throw new Error('Google sign-in is not fully configured. Add GOOGLE_OAUTH_CLIENT_SECRET to .env.local.')
   }
 
+  const focusApp = typeof options === 'object' ? options?.onFocusApp : undefined
+
   // If a session is already in progress, cancel it cleanly before starting a new one
   if (currentSession) {
     cancelGoogleAuth('A new Google sign-in attempt was initiated.')
@@ -231,6 +244,7 @@ export async function getGoogleIdToken(options?: string | GoogleOAuthOptions): P
         !timingSafeEqual(expectedState, actualState)
       ) {
         response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }).end(errorPage('Invalid sign-in state. Please return to Social HUB and try again.'))
+        focusApp?.()
         finish(new Error('Google sign-in returned an invalid state.'))
         return
       }
@@ -238,6 +252,7 @@ export async function getGoogleIdToken(options?: string | GoogleOAuthOptions): P
       const providerError = callbackUrl.searchParams.get('error')
       if (providerError) {
         response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }).end(errorPage('Google sign-in was not completed. You can close this tab and return to Social HUB.'))
+        focusApp?.()
         finish(new Error(`Google sign-in was not completed: ${providerError}.`))
         return
       }
@@ -245,14 +260,22 @@ export async function getGoogleIdToken(options?: string | GoogleOAuthOptions): P
       const code = callbackUrl.searchParams.get('code')
       if (!code || code.length > 4096) {
         response.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' }).end(errorPage('Google sign-in did not return an authorization code.'))
+        focusApp?.()
         finish(new Error('Google sign-in did not return an authorization code.'))
         return
       }
 
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(completionPage)
+      focusApp?.()
       void exchangeCode(code, cleanClientId, cleanClientSecret, verifier, redirectUri).then(
-        (idToken) => finish(undefined, idToken),
-        (error: unknown) => finish(error instanceof Error ? error : new Error('Google token exchange failed.'))
+        (idToken) => {
+          focusApp?.()
+          finish(undefined, idToken)
+        },
+        (error: unknown) => {
+          focusApp?.()
+          finish(error instanceof Error ? error : new Error('Google token exchange failed.'))
+        }
       )
     })
 

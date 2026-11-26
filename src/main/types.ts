@@ -45,6 +45,7 @@ export interface Account {
   unread: number
   permissions: AccountPermissions
   syncedToCloud?: boolean
+  lastUsedAt?: number
 }
 
 export interface NewAccount {
@@ -56,12 +57,14 @@ export interface NewAccount {
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark'
+export type AccountSortMode = 'name' | 'lastUsed'
 
 export interface Preferences {
   doNotDisturb: boolean
   minimizeToTray: boolean
   launchAtStartup: boolean
   theme: ThemeMode
+  accountSortBy?: AccountSortMode
 }
 
 export interface WindowBounds {
