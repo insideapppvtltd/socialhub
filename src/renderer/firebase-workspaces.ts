@@ -28,6 +28,7 @@ export interface FirestoreAccountItem {
 
 export interface FirestoreWorkspaceDocument {
   ws_id: string
+  ws_name?: string
   ws_owner_id: string
   ws_accounts: FirestoreAccountItem[]
   ws_passwords: FirestorePasswordRecord[]
@@ -78,6 +79,30 @@ export function clearLocalWorkspaceOwner(workspaceId: string): void {
     localStorage.setItem(LOCAL_WORKSPACE_OWNERS_KEY, JSON.stringify(owners))
   } catch (err) {
     console.error('[WORKSPACES] Failed to clear local workspace owner binding:', err)
+  }
+}
+
+/**
+ * Synchronizes local workspace owner bindings with authorized remote workspace IDs.
+ * Cleans up any stale local workspace bindings for the user that no longer exist remotely.
+ */
+export function syncLocalWorkspaceOwnersWithRemote(validRemoteWorkspaceIds: string[], userUid: string): void {
+  try {
+    if (typeof localStorage === 'undefined' || !userUid) return
+    const owners = getLocalWorkspaceOwners()
+    const validSet = new Set(validRemoteWorkspaceIds)
+    let changed = false
+    for (const [wsId, ownerUid] of Object.entries(owners)) {
+      if (ownerUid === userUid && !validSet.has(wsId)) {
+        delete owners[wsId]
+        changed = true
+      }
+    }
+    if (changed) {
+      localStorage.setItem(LOCAL_WORKSPACE_OWNERS_KEY, JSON.stringify(owners))
+    }
+  } catch (err) {
+    console.error('[WORKSPACES] Failed to sync local workspace owner bindings:', err)
   }
 }
 
@@ -145,7 +170,7 @@ export function mergeAccountLists(
  */
 export async function syncWorkspaceCreation(
   user: User | null,
-  workspace: { id: string },
+  workspace: { id: string; name?: string },
   initialAccounts: FirestoreAccountItem[] = [],
   firestoreInstance?: Firestore
 ): Promise<FirestoreWorkspaceDocument | null> {
@@ -163,8 +188,10 @@ export async function syncWorkspaceCreation(
 
     setLocalWorkspaceOwner(workspace.id, user.uid)
 
+    const cleanName = (workspace.name || 'Workspace').trim().slice(0, 40)
     const newWorkspaceDoc: FirestoreWorkspaceDocument = {
       ws_id: workspace.id,
+      ws_name: cleanName,
       ws_owner_id: user.uid,
       ws_accounts: initialAccounts,
       ws_passwords: [],
@@ -463,15 +490,33 @@ export async function syncUserWorkspaces(
   )
 
   try {
-    // 1. Query remote Firestore workspaces owned by this authenticated user
-    const q = query(
+    // 1. Query remote Firestore workspaces owned by this user or where user is a collaborator
+    const qOwner = query(
       collection(db, WORKSPACES_COLLECTION),
       where('ws_owner_id', '==', user.uid)
     )
-    const remoteQuerySnap = await getDocs(q)
+    const qMember = query(
+      collection(db, WORKSPACES_COLLECTION),
+      where('ws_users_ids', 'array-contains', user.uid)
+    )
+    const [snapOwner, snapMember] = await Promise.all([
+      getDocs(qOwner),
+      getDocs(qMember).catch(() => ({ empty: true, docs: [], size: 0 }))
+    ])
+
+    const docMap = new Map<string, any>()
+    for (const docSnap of snapOwner.docs) {
+      docMap.set(docSnap.id, docSnap)
+    }
+    for (const docSnap of snapMember.docs) {
+      if (!docMap.has(docSnap.id)) {
+        docMap.set(docSnap.id, docSnap)
+      }
+    }
+    const allDocs = Array.from(docMap.values())
     const remoteWorkspaces: FirestoreWorkspaceDocument[] = []
 
-    if (remoteQuerySnap.empty) {
+    if (allDocs.length === 0) {
       console.log(
         `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered 0 remote workspaces. Initializing empty workspace collection for user.`
       )
@@ -479,10 +524,10 @@ export async function syncUserWorkspaces(
     }
 
     console.log(
-      `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered ${remoteQuerySnap.size} remote workspace(s).`
+      `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered ${allDocs.length} remote workspace(s).`
     )
 
-    for (const docSnap of remoteQuerySnap.docs) {
+    for (const docSnap of allDocs) {
       const data = docSnap.data() as FirestoreWorkspaceDocument
       remoteWorkspaces.push(data)
       setLocalWorkspaceOwner(data.ws_id, user.uid)
@@ -501,16 +546,28 @@ export async function syncUserWorkspaces(
         updates.ws_at_last_visit = serverTimestamp()
       }
 
-      // If workspace is also loaded locally, synchronize accounts
+      // If existing remote workspace document lacks ws_name, populate it from local name if available
       const localWs = localWorkspaces.find((w) => w.id === data.ws_id)
+      if (!data.ws_name && localWs?.name) {
+        const cleanLocalName = localWs.name.trim().slice(0, 40)
+        if (cleanLocalName) {
+          updates.ws_name = cleanLocalName
+          data.ws_name = cleanLocalName
+        }
+      }
+
       if (localWs) {
-        const accountsInWorkspace = (localAccounts || [])
-          .filter((a) => a.workspaceId === localWs.id)
+        // Only upload local accounts that are NOT yet synced to cloud (pending offline accounts)
+        const pendingLocalAccounts = (localAccounts || [])
+          .filter((a) => a.workspaceId === localWs.id && !(a as any).syncedToCloud)
           .map(mapAccountToFirestore)
-        const mergedAccounts = mergeAccountLists(data.ws_accounts || [], accountsInWorkspace)
-        if (JSON.stringify(mergedAccounts) !== JSON.stringify(data.ws_accounts || [])) {
-          updates.ws_accounts = mergedAccounts
-          updates.ws_at_updated = serverTimestamp()
+        if (pendingLocalAccounts.length > 0) {
+          const mergedAccounts = mergeAccountLists(data.ws_accounts || [], pendingLocalAccounts)
+          if (JSON.stringify(mergedAccounts) !== JSON.stringify(data.ws_accounts || [])) {
+            updates.ws_accounts = mergedAccounts
+            data.ws_accounts = mergedAccounts
+            updates.ws_at_updated = serverTimestamp()
+          }
         }
       }
 
@@ -633,6 +690,7 @@ export async function syncWorkspacePasswords(
 export async function syncWorkspaceMetadataUpdate(
   user: User | null,
   workspaceId: string,
+  metadata?: { name?: string },
   firestoreInstance?: Firestore
 ): Promise<boolean> {
   if (!user || !user.uid || !workspaceId) return false
@@ -646,6 +704,9 @@ export async function syncWorkspaceMetadataUpdate(
 
     const updates: Record<string, any> = {
       ws_at_updated: serverTimestamp()
+    }
+    if (metadata?.name && metadata.name.trim()) {
+      updates.ws_name = metadata.name.trim()
     }
     if (!data.ws_at_created) {
       updates.ws_at_created = serverTimestamp()

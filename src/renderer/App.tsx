@@ -38,7 +38,7 @@ import { onAuthStateChanged, type User as FirebaseUser } from 'firebase/auth'
 import type { Account, AccountPermissions, DownloadUpdate, HubNotificationItem, HubState, PermissionState, Preferences, ThemeMode, Workspace } from '../main/types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from '../main/types'
 import { APP_CATALOG, CUSTOM_APP_ID, getCatalogApp, resolvePlatformName } from '../shared/apps'
-import { getFirebaseAuth, logoutUser } from './firebase'
+import { getFirebaseAuth, logoutUser, getFirebaseFirestore } from './firebase'
 import { syncUserDocument, resetUserSyncCache } from './firebase-users'
 import {
   syncUserWorkspaces,
@@ -47,11 +47,16 @@ import {
   syncWorkspaceLastVisit,
   syncWorkspaceOnSwitch,
   syncWorkspaceMetadataUpdate,
+  syncWorkspacePasswords,
   syncAccountAddition,
   syncAccountUpdate,
   syncAccountRemoval,
-  getLocalWorkspaceOwners
+  syncLocalWorkspaceOwnersWithRemote,
+  isAuthorizedUser,
+  WORKSPACES_COLLECTION,
+  type FirestoreWorkspaceDocument
 } from './firebase-workspaces'
+import { doc, getDoc } from 'firebase/firestore'
 import { WelcomeScreen } from './WelcomeScreen'
 import { PasswordManager } from './PasswordManager'
 
@@ -164,6 +169,10 @@ export default function App() {
             id: added.id,
             name: added.name,
             url: added.url
+          }).then((res) => {
+            if (res) {
+              void window.socialHub.markAccountSynced(added.id)
+            }
           })
         }
       }
@@ -194,7 +203,11 @@ export default function App() {
     try {
       const ws = await window.socialHub.addWorkspace(name)
       if (firebaseUser) {
-        await syncWorkspaceCreation(firebaseUser, ws)
+        await syncWorkspaceCreation(firebaseUser, ws).then((res) => {
+          if (res) {
+            void window.socialHub.markWorkspaceSynced(ws.id)
+          }
+        })
       }
       await window.socialHub.activateWorkspace(ws.id)
       const nextState = await window.socialHub.getState()
@@ -210,7 +223,7 @@ export default function App() {
     try {
       const ws = await window.socialHub.renameWorkspace(id, name)
       if (firebaseUser) {
-        void syncWorkspaceMetadataUpdate(firebaseUser, id)
+        void syncWorkspaceMetadataUpdate(firebaseUser, id, { name })
       }
       setDialog(null)
       showToast(`Workspace renamed to “${ws.name}”.`)
@@ -279,6 +292,40 @@ export default function App() {
     }
   }, [addAccount, showToast])
 
+  const isRefreshingRef = useRef(false)
+  const lastSyncTimeRef = useRef(Date.now())
+
+  const syncWorkspacePasswordsToCloud = useCallback(
+    async (workspaceId: string) => {
+      if (!firebaseUser || !workspaceId) return
+      try {
+        const db = getFirebaseFirestore()
+        const wsDocRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+        const wsSnap = await getDoc(wsDocRef)
+        if (!wsSnap.exists()) return
+        const wsData = wsSnap.data() as FirestoreWorkspaceDocument
+        if (!isAuthorizedUser(firebaseUser.uid, wsData)) return
+
+        const remotePasswords = Array.isArray(wsData.ws_passwords) ? wsData.ws_passwords : []
+        const syncResult = await window.socialHub.syncWorkspaceCredentialsWithCloud(
+          workspaceId,
+          remotePasswords
+        )
+        if (syncResult && syncResult.remoteUpdated && Array.isArray(syncResult.mergedRecords)) {
+          await syncWorkspacePasswords(
+            firebaseUser,
+            workspaceId,
+            syncResult.mergedRecords,
+            db
+          )
+        }
+      } catch (err) {
+        console.error(`[PASSWORDS][IMMEDIATE_SYNC][ERROR] Workspace: ${workspaceId}:`, err)
+      }
+    },
+    [firebaseUser]
+  )
+
   const syncFirebaseData = useCallback(async (user: FirebaseUser) => {
     try {
       console.log(`[AUTH][SYNC] Initiating synchronization pipeline for UID: ${user.uid}`)
@@ -291,55 +338,151 @@ export default function App() {
       // 2. Discover and synchronize user-owned workspaces from Firestore
       const hubState = await window.socialHub.getState()
       const result = await syncUserWorkspaces(user, hubState.workspaces, hubState.accounts)
-      if (result.remoteWorkspaces && result.remoteWorkspaces.length > 0) {
-        const remoteIds = result.remoteWorkspaces.map((w) => w.ws_id)
-        await window.socialHub.claimWorkspaces(user.uid, remoteIds)
+      if (result.synced) {
+        // Reconcile workspaces (handles remote additions, remote deletions, and renames)
+        await window.socialHub.reconcileRemoteWorkspaces(result.remoteWorkspaces || [])
+        const validRemoteIds = (result.remoteWorkspaces || []).map((rw) => rw.ws_id)
+        syncLocalWorkspaceOwnersWithRemote(validRemoteIds, user.uid)
 
-        // 3. Load workspace password records into local credentials (one-time fetch on auth)
-        for (const rw of result.remoteWorkspaces) {
-          if (Array.isArray(rw.ws_passwords) && rw.ws_passwords.length > 0) {
-            await window.socialHub.syncWorkspaceCredentialsWithCloud(rw.ws_id, rw.ws_passwords).catch((err) => {
-              console.warn(`[AUTH][PASSWORDS] Could not sync credentials for workspace ${rw.ws_id}:`, err)
+        // Reconcile accounts and passwords for each remote workspace
+        for (const rw of result.remoteWorkspaces || []) {
+          // Reconcile remote accounts for workspace
+          await window.socialHub.reconcileRemoteAccounts(rw.ws_id, rw.ws_accounts || []).catch((err) => {
+            console.warn(`[AUTH][ACCOUNTS] Could not reconcile accounts for workspace ${rw.ws_id}:`, err)
+          })
+
+          // Reconcile passwords for workspace
+          const syncResult = await window.socialHub.syncWorkspaceCredentialsWithCloud(
+            rw.ws_id,
+            rw.ws_passwords || []
+          ).catch((err) => {
+            console.warn(`[AUTH][PASSWORDS] Could not sync credentials for workspace ${rw.ws_id}:`, err)
+            return null
+          })
+          if (syncResult && syncResult.remoteUpdated && Array.isArray(syncResult.mergedRecords)) {
+            await syncWorkspacePasswords(user, rw.ws_id, syncResult.mergedRecords).catch((err) => {
+              console.warn(`[AUTH][PASSWORDS] Could not upload merged passwords for workspace ${rw.ws_id}:`, err)
             })
           }
         }
 
         const updatedState = await window.socialHub.getState()
         setState(updatedState)
+        lastSyncTimeRef.current = Date.now()
+        console.log(`[AUTH][SYNC] Workspace synchronization pipeline completed for UID: ${user.uid}`)
+      } else {
+        throw new Error('Failed to synchronize workspaces with Firestore.')
       }
-      console.log(`[AUTH][SYNC] Workspace synchronization pipeline completed for UID: ${user.uid}`)
     } catch (error) {
       console.error(`[AUTH][SYNC] Synchronization pipeline failed for UID: ${user.uid}:`, error)
+      throw error
     }
   }, [])
 
   const handleManualRefresh = useCallback(async () => {
     if (!firebaseUser) return
+    if (isRefreshingRef.current) return
+    isRefreshingRef.current = true
     try {
       showToast('Refreshing workspaces from cloud...')
       await syncFirebaseData(firebaseUser)
       showToast('Cloud workspaces refreshed.')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Could not refresh.')
+    } finally {
+      isRefreshingRef.current = false
     }
   }, [firebaseUser, syncFirebaseData, showToast])
+
+  const handleWorkspaceSwitch = useCallback(
+    async (workspaceId: string) => {
+      try {
+        setWorkspaceMenuOpen(false)
+        setPasswordsOpen(false)
+        setNotificationsOpen(false)
+        await window.socialHub.activateWorkspace(workspaceId)
+        if (firebaseUser) {
+          const docData = await syncWorkspaceOnSwitch(firebaseUser, workspaceId)
+          if (docData) {
+            // Reconcile workspace name if remote changed
+            if (docData.ws_name) {
+              const currentWs = state.workspaces.find((w) => w.id === workspaceId)
+              const cleanRemoteName = docData.ws_name.trim().slice(0, 40)
+              if (currentWs && cleanRemoteName && currentWs.name !== cleanRemoteName) {
+                await window.socialHub.renameWorkspace(workspaceId, cleanRemoteName).catch(() => {})
+              }
+            }
+            // Reconcile accounts for workspace
+            await window.socialHub.reconcileRemoteAccounts(workspaceId, docData.ws_accounts || []).catch(() => {})
+            // Reconcile passwords for workspace
+            const syncResult = await window.socialHub.syncWorkspaceCredentialsWithCloud(
+              workspaceId,
+              docData.ws_passwords || []
+            ).catch(() => null)
+            if (syncResult && syncResult.remoteUpdated && Array.isArray(syncResult.mergedRecords)) {
+              void syncWorkspacePasswords(firebaseUser, workspaceId, syncResult.mergedRecords)
+            }
+            const nextState = await window.socialHub.getState()
+            setState(nextState)
+          }
+        }
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Could not switch workspace.')
+      }
+    },
+    [firebaseUser, showToast]
+  )
+
+  // Immediate password upload subscription (runs even when PasswordManager is closed)
+  useEffect(() => {
+    if (!firebaseUser) return
+    const unsubscribe = window.socialHub.onPasswordsUpdated((payload) => {
+      const targetWsId = payload?.workspaceId || state.activeWorkspaceId
+      if (targetWsId) {
+        void syncWorkspacePasswordsToCloud(targetWsId)
+      }
+    })
+    return () => unsubscribe?.()
+  }, [firebaseUser, state.activeWorkspaceId, syncWorkspacePasswordsToCloud])
+
+  // Periodic fresh one-time read on window focus / reopen (with 20s debounce)
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!firebaseUser) return
+      const now = Date.now()
+      if (now - lastSyncTimeRef.current > 20000 && !isRefreshingRef.current) {
+        lastSyncTimeRef.current = now
+        void syncFirebaseData(firebaseUser).catch(() => {})
+      }
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [firebaseUser, syncFirebaseData])
 
   useEffect(() => {
     try {
       return onAuthStateChanged(
         getFirebaseAuth(),
         async (user) => {
-          setFirebaseUser(user)
-          setFirebaseAuthChecked(true)
           if (user) {
-            const localOwners = getLocalWorkspaceOwners()
-            const nextState = await window.socialHub.setCurrentUser(user.uid, localOwners)
-            setState(nextState)
-            void syncFirebaseData(user)
+            setFirebaseAuthChecked(false)
+            try {
+              await window.socialHub.setCurrentUser(user.uid)
+              await syncFirebaseData(user)
+            } catch (err) {
+              console.error('[AUTH] Sync failed during auth change:', err)
+              const fallback = await window.socialHub.getState()
+              setState(fallback)
+            } finally {
+              setFirebaseUser(user)
+              setFirebaseAuthChecked(true)
+            }
           } else {
             resetUserSyncCache()
             const nextState = await window.socialHub.setCurrentUser(null)
             setState(nextState)
+            setFirebaseUser(null)
+            setFirebaseAuthChecked(true)
           }
         },
         (error) => {
@@ -405,14 +548,7 @@ export default function App() {
       if (notif.workspaceId && notif.workspaceId !== state.activeWorkspaceId) {
         const targetWorkspace = state.workspaces.find((w) => w.id === notif.workspaceId)
         if (targetWorkspace) {
-          await window.socialHub.activateWorkspace(targetWorkspace.id)
-          if (firebaseUser) {
-            void syncWorkspaceOnSwitch(firebaseUser, targetWorkspace.id).then((docData) => {
-              if (docData && Array.isArray(docData.ws_passwords) && docData.ws_passwords.length > 0) {
-                void window.socialHub.syncWorkspaceCredentialsWithCloud(targetWorkspace.id, docData.ws_passwords)
-              }
-            })
-          }
+          await handleWorkspaceSwitch(targetWorkspace.id)
         }
       }
       await window.socialHub.activateAccount(targetAccount.id)
@@ -512,8 +648,6 @@ export default function App() {
     setMenu(null)
   }
 
-  const totalUnread = workspaceAccounts.reduce((sum, account) => sum + account.unread, 0)
-
   if (!firebaseAuthChecked) {
     return (
       <div className="auth-splash-screen" role="status" aria-label="Loading Social HUB">
@@ -604,19 +738,7 @@ export default function App() {
                         key={ws.id}
                         className={`workspace-menu-item ${isActive ? 'active' : ''}`}
                         onClick={() => {
-                          setWorkspaceMenuOpen(false)
-                          setPasswordsOpen(false)
-                          setNotificationsOpen(false)
-                          if (firebaseUser) {
-                            void syncWorkspaceOnSwitch(firebaseUser, ws.id).then((docData) => {
-                              if (docData && Array.isArray(docData.ws_passwords) && docData.ws_passwords.length > 0) {
-                                void window.socialHub.syncWorkspaceCredentialsWithCloud(ws.id, docData.ws_passwords)
-                              }
-                            })
-                          }
-                          void window.socialHub.activateWorkspace(ws.id).catch((err: unknown) => {
-                            showToast(err instanceof Error ? err.message : 'Could not switch workspace.')
-                          })
+                          void handleWorkspaceSwitch(ws.id)
                         }}
                       >
                         <span className="ws-item-title">{ws.name}</span>
@@ -670,7 +792,6 @@ export default function App() {
         <section className="account-section" aria-label="Web app accounts">
           <div className="section-heading">
             <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
-            {totalUnread > 0 && <span className="total-pill">{totalUnread > 99 ? '99+' : totalUnread} unread</span>}
           </div>
 
           <nav className="account-list">

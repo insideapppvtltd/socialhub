@@ -6,7 +6,7 @@ import type { UserPasswordCryptoMetadata, CloudEncryptedCredentialRecord, Firest
 export type { CredentialSummary, UserPasswordCryptoMetadata, CloudEncryptedCredentialRecord, FirestorePasswordRecord }
 
 export interface SocialHubAPI {
-  setCurrentUser(uid: string | null, localOwners?: Record<string, string>): Promise<HubState>
+  setCurrentUser(uid: string | null): Promise<HubState>
   claimWorkspaces(uid: string, workspaceIds: string[]): Promise<boolean>
   getState(): Promise<HubState>
   getGoogleAuthToken(): Promise<string>
@@ -45,7 +45,7 @@ export interface SocialHubAPI {
   copyPassword(id: string): Promise<boolean>
   updateCredential(payload: { id: string; username: string; password?: string }): Promise<unknown>
   deleteCredential(id: string): Promise<boolean>
-  onPasswordsUpdated(callback: () => void): () => void
+  onPasswordsUpdated(callback: (payload?: { workspaceId?: string; accountId?: string }) => void): () => void
   getCloudPasswordStatus(): Promise<{ unlocked: boolean; configured?: boolean }>
   setupCloudPassword(masterPassword: string): Promise<{ metadata: UserPasswordCryptoMetadata }>
   unlockCloudPassword(masterPassword: string, metadata: UserPasswordCryptoMetadata): Promise<{ success: boolean }>
@@ -55,11 +55,19 @@ export interface SocialHubAPI {
     remoteRecords: (FirestorePasswordRecord | CloudEncryptedCredentialRecord | any)[]
   ): Promise<{ mergedRecords: FirestorePasswordRecord[]; localUpdated: boolean; remoteUpdated?: boolean }>
   encryptCredentialForCloud(credentialId: string): Promise<FirestorePasswordRecord | null>
+  reconcileRemoteWorkspaces(remoteWorkspaces: unknown[]): Promise<{ added: string[]; removed: string[]; updated: string[] }>
+  reconcileRemoteAccounts(workspaceId: string, remoteAccounts: unknown[]): Promise<{ added: string[]; removed: string[]; updated: string[] }>
+  markAccountSynced(accountId: string): Promise<boolean>
+  markWorkspaceSynced(workspaceId: string): Promise<boolean>
 }
 
 const api: SocialHubAPI = {
-  setCurrentUser: (uid, localOwners) => ipcRenderer.invoke('hub:set-current-user', uid, localOwners),
+  setCurrentUser: (uid) => ipcRenderer.invoke('hub:set-current-user', uid),
   claimWorkspaces: (uid, workspaceIds) => ipcRenderer.invoke('hub:claim-workspaces', uid, workspaceIds),
+  reconcileRemoteWorkspaces: (remoteWorkspaces) => ipcRenderer.invoke('hub:reconcile-remote-workspaces', remoteWorkspaces),
+  reconcileRemoteAccounts: (workspaceId, remoteAccounts) => ipcRenderer.invoke('hub:reconcile-remote-accounts', { workspaceId, remoteAccounts }),
+  markAccountSynced: (accountId) => ipcRenderer.invoke('hub:mark-account-synced', accountId),
+  markWorkspaceSynced: (workspaceId) => ipcRenderer.invoke('hub:mark-workspace-synced', workspaceId),
   getState: () => ipcRenderer.invoke('hub:get-state'),
   getGoogleAuthToken: () => ipcRenderer.invoke('hub:google-auth-token'),
   cancelGoogleAuth: () => ipcRenderer.invoke('hub:google-auth-cancel'),

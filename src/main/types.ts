@@ -25,6 +25,7 @@ export interface Workspace {
   name: string
   createdAt: string
   ownerId?: string
+  syncedToCloud?: boolean
 }
 
 export interface NewWorkspace {
@@ -43,6 +44,7 @@ export interface Account {
   url: string
   unread: number
   permissions: AccountPermissions
+  syncedToCloud?: boolean
 }
 
 export interface NewAccount {

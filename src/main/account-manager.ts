@@ -116,12 +116,8 @@ export class AccountManager {
     this.migrate()
   }
 
-  setCurrentUser(uid: string | null, knownOwners?: Record<string, string>): void {
+  setCurrentUser(uid: string | null): void {
     this.currentUserUid = uid
-    if (knownOwners && typeof knownOwners === 'object') {
-      const current = store.get('workspaceOwners') || {}
-      store.set('workspaceOwners', { ...current, ...knownOwners })
-    }
   }
 
   getCurrentUser(): string | null {
@@ -154,6 +150,112 @@ export class AccountManager {
     const all = (store.get('workspaces') as Workspace[]) || []
     const updated = all.map((w) => (workspaceIds.includes(w.id) ? { ...w, ownerId: ownerUid } : w))
     store.set('workspaces', updated)
+  }
+
+  markWorkspaceSynced(workspaceId: string, synced = true): void {
+    const all = (store.get('workspaces') as Workspace[]) || []
+    const updated = all.map((w) => (w.id === workspaceId ? { ...w, syncedToCloud: synced } : w))
+    store.set('workspaces', updated)
+  }
+
+  markAccountSynced(accountId: string, synced = true): void {
+    const all = (store.get('accounts') as StoredAccount[]) || []
+    const updated = all.map((a) => (a.id === accountId ? { ...a, syncedToCloud: synced } : a))
+    store.set('accounts', updated)
+  }
+
+  getRawStoreAccounts(): StoredAccount[] {
+    return (store.get('accounts') as StoredAccount[]) || []
+  }
+
+  reconcileRemoteWorkspaces(
+    remoteWorkspaces: Array<{ ws_id: string; ws_name: string; ws_owner_id: string }>
+  ): { added: string[]; removed: string[]; updated: string[] } {
+    if (!this.currentUserUid) return { added: [], removed: [], updated: [] }
+
+    const added: string[] = []
+    const removed: string[] = []
+    const updated: string[] = []
+
+    const allWorkspaces = (store.get('workspaces') as Workspace[]) || []
+    const owners = store.get('workspaceOwners') || {}
+    const remoteMap = new Map(remoteWorkspaces.map((rw) => [rw.ws_id, rw]))
+
+    let modified = [...allWorkspaces]
+
+    // 1. Remote workspaces: add new or update existing
+    for (const rw of remoteWorkspaces) {
+      if (!rw.ws_id) continue
+      owners[rw.ws_id] = rw.ws_owner_id || this.currentUserUid
+      const idx = modified.findIndex((w) => w.id === rw.ws_id)
+      if (idx >= 0) {
+        const existing = modified[idx]
+        const cleanName = (rw.ws_name || '').trim().slice(0, 40)
+        if (cleanName && cleanName !== existing.name) {
+          modified[idx] = {
+            ...existing,
+            name: cleanName,
+            ownerId: rw.ws_owner_id || existing.ownerId,
+            syncedToCloud: true
+          }
+          updated.push(rw.ws_id)
+        } else if (!existing.syncedToCloud) {
+          modified[idx] = { ...existing, syncedToCloud: true }
+        }
+      } else {
+        const cleanName = (rw.ws_name || 'Workspace').trim().slice(0, 40)
+        const imported: Workspace = {
+          id: rw.ws_id,
+          name: cleanName,
+          createdAt: new Date().toISOString(),
+          ownerId: rw.ws_owner_id || this.currentUserUid,
+          syncedToCloud: true
+        }
+        modified.push(imported)
+        added.push(rw.ws_id)
+      }
+    }
+
+    // 2. Identify local workspaces deleted remotely or no longer authorized
+    const toKeep: Workspace[] = []
+    for (const lw of modified) {
+      const isUserWs =
+        lw.ownerId === this.currentUserUid || owners[lw.id] === this.currentUserUid
+      if (isUserWs) {
+        if (!remoteMap.has(lw.id)) {
+          // Workspace does not exist in remote authorized workspaces - remove it
+          removed.push(lw.id)
+          delete owners[lw.id]
+          this.removeNotificationsForWorkspace(lw.id)
+          continue
+        }
+      }
+      toKeep.push(lw)
+    }
+
+    store.set('workspaces', toKeep)
+    store.set('workspaceOwners', owners)
+
+    // Remove accounts belonging to removed workspaces
+    if (removed.length > 0) {
+      const removedSet = new Set(removed)
+      const allAccounts = (store.get('accounts') as StoredAccount[]) || []
+      const remainingAccounts = allAccounts.filter((a) => !removedSet.has(a.workspaceId))
+      store.set('accounts', remainingAccounts)
+    }
+
+    // Ensure active workspace is valid
+    const currentActive = this.activeWorkspaceId()
+    const remainingUserWs = this.listWorkspaces()
+    if (remainingUserWs.length === 0) {
+      const map = (store.get('activeUserWorkspaceMap') as Record<string, string>) || {}
+      delete map[this.currentUserUid]
+      store.set('activeUserWorkspaceMap', map)
+    } else if (!currentActive || removed.includes(currentActive) || !remainingUserWs.some((w) => w.id === currentActive)) {
+      this.setActiveWorkspace(remainingUserWs[0].id)
+    }
+
+    return { added, removed, updated }
   }
 
   private migrate(): void {
@@ -286,7 +388,8 @@ export class AccountManager {
       id: randomUUID(),
       name: cleanName,
       createdAt: new Date().toISOString(),
-      ownerId: targetUid
+      ownerId: targetUid,
+      syncedToCloud: false
     }
     const allWorkspaces = (store.get('workspaces') as Workspace[]) || []
     store.set('workspaces', [...allWorkspaces, workspace])
@@ -430,11 +533,44 @@ export class AccountManager {
       createdAt: new Date().toISOString(),
       appId,
       url,
-      permissions: effectivePermissions
+      permissions: effectivePermissions,
+      syncedToCloud: false
     }
     const allAccounts = (store.get('accounts') as StoredAccount[]) || []
     store.set('accounts', [...allAccounts, account])
     store.set('activeAccountId', account.id)
+    return account
+  }
+
+  addWithId(
+    id: string,
+    name: string,
+    appId: string,
+    url: string,
+    workspaceId: string,
+    options?: { syncedToCloud?: boolean }
+  ): StoredAccount {
+    const cleanName = (name || '').trim().slice(0, 40)
+    const cleanUrl = (url || '').trim()
+    const cleanAppId = appId && (appId === CUSTOM_APP_ID || getCatalogApp(appId)) ? appId : CUSTOM_APP_ID
+    const allAccounts = (store.get('accounts') as StoredAccount[]) || []
+    const existing = allAccounts.find((a) => a.id === id)
+    if (existing) return existing
+
+    const accountsInWs = this.list().filter((a) => a.workspaceId === workspaceId)
+    const account: StoredAccount = {
+      id,
+      workspaceId,
+      name: cleanName || 'Account',
+      color: colors[accountsInWs.length % colors.length],
+      muted: false,
+      createdAt: new Date().toISOString(),
+      appId: cleanAppId,
+      url: cleanUrl || 'https://google.com',
+      permissions: { ...this.getGlobalDefaultPermissions() },
+      syncedToCloud: options?.syncedToCloud ?? true
+    }
+    store.set('accounts', [...allAccounts, account])
     return account
   }
 

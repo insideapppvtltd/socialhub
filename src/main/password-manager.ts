@@ -28,6 +28,8 @@ export interface StoredCredentialRecord {
   passwordEncrypted: string // base64 representation of safeStorage.encryptString()
   createdAt: number
   updatedAt: number
+  syncedToCloud?: boolean
+  pendingSync?: boolean
 }
 
 export interface CredentialSummary {
@@ -142,7 +144,9 @@ export class PasswordManager {
         ...existing,
         username: cleanUsername || existing.username,
         passwordEncrypted: encrypted,
-        updatedAt: now
+        updatedAt: now,
+        syncedToCloud: false,
+        pendingSync: true
       }
       credentials[existingIndex] = updated
       this.store.set('credentials', credentials)
@@ -157,7 +161,9 @@ export class PasswordManager {
       username: cleanUsername,
       passwordEncrypted: encrypted,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      syncedToCloud: false,
+      pendingSync: true
     }
 
     credentials.push(newRecord)
@@ -306,12 +312,18 @@ export class PasswordManager {
       ...existing,
       username: (username ?? existing.username).trim(),
       passwordEncrypted,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      pendingSync: true
     }
 
     credentials[idx] = updated
     this.store.set('credentials', credentials)
     return updated
+  }
+
+  getCredential(credentialId: string): StoredCredentialRecord | undefined {
+    const credentials = this.store.get('credentials') || []
+    return credentials.find((c) => c.id === credentialId)
   }
 
   deleteCredential(credentialId: string): boolean {
@@ -416,7 +428,9 @@ export class PasswordManager {
         origin: cleanOrigin,
         username: cleanUsername,
         passwordEncrypted: encrypted,
-        updatedAt: updatedAt || now
+        updatedAt: updatedAt || now,
+        syncedToCloud: true,
+        pendingSync: false
       }
       credentials[existingIndex] = updated
       this.store.set('credentials', credentials)
@@ -431,7 +445,9 @@ export class PasswordManager {
       username: cleanUsername,
       passwordEncrypted: encrypted,
       createdAt: createdAt || now,
-      updatedAt: updatedAt || now
+      updatedAt: updatedAt || now,
+      syncedToCloud: true,
+      pendingSync: false
     }
 
     credentials.push(newRecord)
@@ -602,7 +618,7 @@ export class PasswordManager {
         }
         mergedMap.set(passId, plaintextRec)
 
-        // If not found locally, import to local storage with safeStorage
+        // If not found locally, import to local storage with safeStorage; if found and no local pending edits, update if remote changed
         const localMatch = localCredentials.find(
           (c) =>
             c.id === passId ||
@@ -610,7 +626,38 @@ export class PasswordManager {
               c.username.toLowerCase() === plaintextRec.pass_name.toLowerCase())
         )
 
-        if (!localMatch && plaintextRec.pass_value && plaintextRec.pass_link) {
+        if (localMatch) {
+          if (!localMatch.pendingSync) {
+            try {
+              const currentLocalPass = this.encryption.decrypt(localMatch.passwordEncrypted)
+              if (
+                currentLocalPass !== plaintextRec.pass_value ||
+                localMatch.username !== plaintextRec.pass_name ||
+                normalizeOrigin(localMatch.origin) !== normalizeOrigin(plaintextRec.pass_link)
+              ) {
+                this.saveCredentialFromCloud(
+                  workspaceId,
+                  localMatch.accountId || 'default-acc',
+                  plaintextRec.pass_link,
+                  plaintextRec.pass_name,
+                  plaintextRec.pass_value,
+                  passId
+                )
+                localUpdated = true
+              }
+            } catch {
+              this.saveCredentialFromCloud(
+                workspaceId,
+                localMatch.accountId || 'default-acc',
+                plaintextRec.pass_link,
+                plaintextRec.pass_name,
+                plaintextRec.pass_value,
+                passId
+              )
+              localUpdated = true
+            }
+          }
+        } else if (plaintextRec.pass_value && plaintextRec.pass_link) {
           try {
             this.saveCredentialFromCloud(
               workspaceId,
@@ -632,20 +679,82 @@ export class PasswordManager {
     const freshLocal = (this.store.get('credentials') || []).filter(
       (c) => c.workspaceId === workspaceId
     )
+    const remoteIdSet = new Set(
+      (remoteRecords || [])
+        .map((r: any) => r.pass_id || r.cred_id || r.credential_id || r.id)
+        .filter(Boolean)
+    )
+
+    let allStoredUpdated = false
+    const allStoredList = [...(this.store.get('credentials') || [])]
 
     for (const loc of freshLocal) {
-      try {
-        const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
-        const cloudRecord: FirestorePasswordRecord = {
-          pass_id: loc.id,
-          pass_link: loc.origin,
-          pass_name: loc.username,
-          pass_value: plainPass
+      if (remoteIdSet.has(loc.id)) {
+        // Credential is in remote Firestore
+        if (loc.pendingSync) {
+          // Local has unsaved edits: push local plaintext to mergedMap
+          try {
+            const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
+            mergedMap.set(loc.id, {
+              pass_id: loc.id,
+              pass_link: loc.origin,
+              pass_name: loc.username,
+              pass_value: plainPass
+            })
+            // Clear pendingSync and mark synced
+            const idx = allStoredList.findIndex((c) => c.id === loc.id)
+            if (idx >= 0) {
+              allStoredList[idx] = { ...allStoredList[idx], syncedToCloud: true, pendingSync: false }
+              allStoredUpdated = true
+            }
+          } catch (err) {
+            console.error(`[PASSWORDS][SYNC] Failed to decrypt local credential ${loc.id}:`, err)
+          }
+        } else {
+          // Mark as confirmed syncedToCloud locally
+          if (!loc.syncedToCloud) {
+            const idx = allStoredList.findIndex((c) => c.id === loc.id)
+            if (idx >= 0) {
+              allStoredList[idx] = { ...allStoredList[idx], syncedToCloud: true, pendingSync: false }
+              allStoredUpdated = true
+            }
+          }
         }
-        mergedMap.set(loc.id, cloudRecord)
-      } catch (err) {
-        console.error(`[PASSWORDS][SYNC] Failed to decrypt local credential ${loc.id}:`, err)
+      } else {
+        // Local credential is NOT in remote Firestore
+        if (loc.syncedToCloud && !loc.pendingSync) {
+          // It was previously confirmed in cloud, but now absent: DELETED REMOTELY!
+          const idx = allStoredList.findIndex((c) => c.id === loc.id)
+          if (idx >= 0) {
+            allStoredList.splice(idx, 1)
+            allStoredUpdated = true
+            localUpdated = true
+          }
+          // Do NOT add to mergedMap!
+        } else {
+          // It is a pending local credential (e.g. newly auto-saved, created offline, or not yet synced)
+          try {
+            const plainPass = this.encryption.decrypt(loc.passwordEncrypted)
+            mergedMap.set(loc.id, {
+              pass_id: loc.id,
+              pass_link: loc.origin,
+              pass_name: loc.username,
+              pass_value: plainPass
+            })
+            const idx = allStoredList.findIndex((c) => c.id === loc.id)
+            if (idx >= 0) {
+              allStoredList[idx] = { ...allStoredList[idx], syncedToCloud: true, pendingSync: false }
+              allStoredUpdated = true
+            }
+          } catch (err) {
+            console.error(`[PASSWORDS][SYNC] Failed to decrypt local credential ${loc.id}:`, err)
+          }
+        }
       }
+    }
+
+    if (allStoredUpdated) {
+      this.store.set('credentials', allStoredList)
     }
 
     const mergedRecords = Array.from(mergedMap.values())

@@ -88,9 +88,9 @@ export function registerIpc(
       window.webContents.send('hub:notifications', accounts.getNotifications())
     }
   }
-  const broadcastPasswordsUpdated = (): void => {
+  const broadcastPasswordsUpdated = (payload?: { workspaceId?: string; accountId?: string }): void => {
     if (!window.isDestroyed()) {
-      window.webContents.send('hub:passwords-updated')
+      window.webContents.send('hub:passwords-updated', payload)
     }
   }
   ipcMain.handle('hub:passwords-list', (event) => {
@@ -121,17 +121,19 @@ export function registerIpc(
     if (typeof data.id !== 'string' || !data.id.trim()) throw new Error('Invalid credential ID.')
     const username = typeof data.username === 'string' ? data.username : ''
     const password = typeof data.password === 'string' && data.password.trim() ? data.password : undefined
+    const existingCred = passwordManager.getCredential(data.id.trim())
     const updated = passwordManager.updateCredential(data.id.trim(), username, password)
-    broadcastPasswordsUpdated()
+    broadcastPasswordsUpdated({ workspaceId: existingCred?.workspaceId })
     return updated
   })
   ipcMain.handle('hub:passwords-delete', (event, id: unknown) => {
     guard(event)
     if (typeof id !== 'string' || !id.trim()) throw new Error('Invalid credential ID.')
     if (!passwordManager) throw new Error('Password manager is not available.')
+    const existingCred = passwordManager.getCredential(id.trim())
     const deleted = passwordManager.deleteCredential(id.trim())
     if (deleted) {
-      broadcastPasswordsUpdated()
+      broadcastPasswordsUpdated({ workspaceId: existingCred?.workspaceId })
     }
     return deleted
   })
@@ -244,7 +246,7 @@ export function registerIpc(
 
     try {
       passwordManager.saveCredential(account.workspaceId, account.id, frameOrigin, username, data.password)
-      broadcastPasswordsUpdated()
+      broadcastPasswordsUpdated({ workspaceId: account.workspaceId, accountId: account.id })
     } catch (error) {
       console.warn('[PASSWORDS][SAVE] Auto-save failed:', error)
     }
@@ -271,12 +273,11 @@ export function registerIpc(
     guard(event)
     return getState()
   })
-  ipcMain.handle('hub:set-current-user', (event, uid: unknown, localOwners?: unknown) => {
+  ipcMain.handle('hub:set-current-user', (event, uid: unknown) => {
     guard(event)
     const userUid = typeof uid === 'string' && uid.trim() ? uid.trim() : null
-    const owners = localOwners && typeof localOwners === 'object' ? (localOwners as Record<string, string>) : undefined
     const previousUid = accounts.getCurrentUser()
-    accounts.setCurrentUser(userUid, owners)
+    accounts.setCurrentUser(userUid)
     views.switchUser(userUid)
     if (previousUid !== userUid || userUid === null) {
       passwordManager?.lockCloud()
@@ -293,6 +294,45 @@ export function registerIpc(
     accounts.claimWorkspaces(uid.trim(), workspaceIds as string[])
     window.webContents.send('hub:state', getState())
     return true
+  })
+  ipcMain.handle('hub:reconcile-remote-workspaces', (event, remoteWorkspaces: unknown) => {
+    guard(event)
+    if (!Array.isArray(remoteWorkspaces)) return { added: [], removed: [], updated: [] }
+    const result = accounts.reconcileRemoteWorkspaces(remoteWorkspaces as any)
+    if (result.removed.length > 0) {
+      for (const removedWsId of result.removed) {
+        passwordManager?.deleteForWorkspace(removedWsId)
+      }
+    }
+    if (result.added.length > 0 || result.removed.length > 0 || result.updated.length > 0) {
+      if (!window.isDestroyed()) window.webContents.send('hub:state', getState())
+    }
+    return result
+  })
+  ipcMain.handle('hub:reconcile-remote-accounts', (event, payload: unknown) => {
+    guard(event)
+    if (!payload || typeof payload !== 'object') return { added: [], removed: [], updated: [] }
+    const data = payload as { workspaceId?: unknown; remoteAccounts?: unknown }
+    if (typeof data.workspaceId !== 'string' || !Array.isArray(data.remoteAccounts)) {
+      return { added: [], removed: [], updated: [] }
+    }
+    return views.reconcileRemoteAccounts(data.workspaceId, data.remoteAccounts as any)
+  })
+  ipcMain.handle('hub:mark-account-synced', (event, accountId: unknown) => {
+    guard(event)
+    if (typeof accountId === 'string' && accountId.trim()) {
+      accounts.markAccountSynced(accountId.trim(), true)
+      return true
+    }
+    return false
+  })
+  ipcMain.handle('hub:mark-workspace-synced', (event, workspaceId: unknown) => {
+    guard(event)
+    if (typeof workspaceId === 'string' && workspaceId.trim()) {
+      accounts.markWorkspaceSynced(workspaceId.trim(), true)
+      return true
+    }
+    return false
   })
   ipcMain.handle('hub:add-account', (event, value: unknown) => {
     guard(event)

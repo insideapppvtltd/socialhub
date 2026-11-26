@@ -258,6 +258,9 @@ export function PasswordManager({ user, workspaces, onClose, showToast }: Passwo
         offUpdate = window.socialHub.onPasswordsUpdated(() => {
           if (isMounted) {
             void loadCredentials()
+            if (user && user.uid) {
+              void runCloudSync(false)
+            }
           }
         })
       }

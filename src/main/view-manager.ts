@@ -17,7 +17,7 @@ import path from 'node:path'
 import { AccountManager } from './account-manager'
 import { HubNotifications } from './notifications'
 import { SIDEBAR_WIDTH } from '../shared/layout'
-import { APP_CATALOG, resolvePlatformName } from '../shared/apps'
+import { APP_CATALOG, resolvePlatformName, resolveCatalogAppId } from '../shared/apps'
 import type { Account, AccountPermissions, DownloadUpdate } from './types'
 import { DEFAULT_ACCOUNT_PERMISSIONS } from './types'
 
@@ -261,6 +261,104 @@ export class ViewManager {
       for (const v of this.views.values()) v.setVisible(false)
       this.onStateChanged()
     }
+  }
+
+  removeAccountQuietly(id: string): void {
+    const account = this.accounts.get(id)
+    if (!account) return
+    const view = this.views.get(id)
+    view?.setVisible(false)
+    if (view) {
+      try {
+        this.window.contentView.removeChildView(view)
+        view.webContents.close()
+      } catch {}
+    }
+    this.views.delete(id)
+    this.sessions.delete(id)
+    this.unread.delete(id)
+    this.unsupported.delete(id)
+    this.notifications.dismissAllCallsForAccount(id)
+    this.accounts.remove(id)
+    if (this.activeId === id) {
+      const nextId = this.accounts.activeId()
+      this.activeId = null
+      if (nextId) this.activate(nextId)
+      else {
+        for (const v of this.views.values()) v.setVisible(false)
+        this.onStateChanged()
+      }
+    }
+  }
+
+  reconcileRemoteAccounts(
+    workspaceId: string,
+    remoteAccounts: Array<{ ws_acc_id: string; ws_acc_name: string; ws_acc_link: string }>
+  ): { added: string[]; removed: string[]; updated: string[] } {
+    const added: string[] = []
+    const removed: string[] = []
+    const updated: string[] = []
+
+    const allAccounts = this.accounts.getRawStoreAccounts()
+    const localInWs = allAccounts.filter((a) => a.workspaceId === workspaceId)
+    const remoteMap = new Map(remoteAccounts.map((a) => [a.ws_acc_id, a]))
+
+    // 1. Process local accounts: update modified or remove deleted
+    for (const localAcc of localInWs) {
+      const remote = remoteMap.get(localAcc.id)
+      if (remote) {
+        const nameChanged = remote.ws_acc_name && remote.ws_acc_name.trim() !== localAcc.name
+        const urlChanged = remote.ws_acc_link && remote.ws_acc_link.trim() !== localAcc.url
+        if (nameChanged || urlChanged) {
+          try {
+            this.updateAccount(localAcc.id, {
+              name: remote.ws_acc_name ? remote.ws_acc_name.trim() : undefined,
+              url: remote.ws_acc_link ? remote.ws_acc_link.trim() : undefined
+            })
+            updated.push(localAcc.id)
+          } catch (e) {
+            console.warn(`[VIEW_MANAGER] Could not update account ${localAcc.id}:`, e)
+          }
+        }
+        if (!localAcc.syncedToCloud) {
+          this.accounts.markAccountSynced(localAcc.id, true)
+        }
+      } else {
+        // Not in remote: if already synced to cloud, it was deleted remotely!
+        if (localAcc.syncedToCloud) {
+          this.removeAccountQuietly(localAcc.id)
+          removed.push(localAcc.id)
+        }
+      }
+    }
+
+    // 2. Add remote accounts not present locally
+    for (const remote of remoteAccounts) {
+      if (!remote.ws_acc_id) continue
+      const exists = localInWs.some((a) => a.id === remote.ws_acc_id)
+      if (!exists) {
+        try {
+          const imported = this.accounts.addWithId(
+            remote.ws_acc_id,
+            remote.ws_acc_name || 'Account',
+            resolveCatalogAppId(remote.ws_acc_link),
+            remote.ws_acc_link,
+            workspaceId,
+            { syncedToCloud: true }
+          )
+          this.createView(imported)
+          added.push(remote.ws_acc_id)
+        } catch (e) {
+          console.warn(`[VIEW_MANAGER] Could not import remote account ${remote.ws_acc_id}:`, e)
+        }
+      }
+    }
+
+    if (added.length > 0 || removed.length > 0 || updated.length > 0) {
+      this.onStateChanged()
+    }
+
+    return { added, removed, updated }
   }
 
   rename(id: string, name: string): Account {

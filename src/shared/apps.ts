@@ -106,3 +106,25 @@ export function resolvePlatformName(appId?: string, url?: string): string {
   }
   return 'Web'
 }
+
+export function resolveCatalogAppId(url?: string): string {
+  if (!url) return CUSTOM_APP_ID
+  try {
+    const parsed = new URL(url)
+    const hostname = parsed.hostname.toLowerCase().replace(/^www\./, '')
+    for (const app of APP_CATALOG) {
+      try {
+        const appHost = new URL(app.url).hostname.toLowerCase().replace(/^www\./, '')
+        const baseAppHost = appHost.replace(/^(web|app|mail|teams|chat|mobile)\./, '')
+        if (
+          hostname === appHost ||
+          hostname.endsWith(`.${appHost}`) ||
+          (baseAppHost && (hostname === baseAppHost || hostname.endsWith(`.${baseAppHost}`)))
+        ) {
+          return app.id
+        }
+      } catch {}
+    }
+  } catch {}
+  return CUSTOM_APP_ID
+}
