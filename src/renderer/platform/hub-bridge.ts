@@ -258,11 +258,11 @@ export function createAndroidHubBridge(): SocialHubAPI {
 
     async reconcileRemoteAccounts(workspaceId, remoteAccounts) {
       await loadState()
-      const list = remoteAccounts as Array<{ ws_acc_id: string; ws_acc_name: string; ws_acc_link: string }>
+      const list = remoteAccounts as Array<{ ws_app_id: string; ws_app_name: string; ws_app_link: string }>
       const added: string[] = []
       const removed: string[] = []
       const updated: string[] = []
-      const remoteMap = new Map(list.filter((a) => a.ws_acc_id).map((a) => [a.ws_acc_id, a]))
+      const remoteMap = new Map(list.filter((a) => a.ws_app_id).map((a) => [a.ws_app_id, a]))
       const nextAccounts: Account[] = []
 
       for (const localAcc of memState.accounts) {
@@ -272,8 +272,8 @@ export function createAndroidHubBridge(): SocialHubAPI {
         }
         const remote = remoteMap.get(localAcc.id)
         if (remote) {
-          const nextName = remote.ws_acc_name?.trim() || localAcc.name
-          const nextUrl = remote.ws_acc_link?.trim() || localAcc.url
+          const nextName = remote.ws_app_name?.trim() || localAcc.name
+          const nextUrl = remote.ws_app_link?.trim() || localAcc.url
           if (nextName !== localAcc.name || nextUrl !== localAcc.url || !localAcc.syncedToCloud) {
             nextAccounts.push({ ...localAcc, name: nextName, url: nextUrl, syncedToCloud: true })
             if (nextName !== localAcc.name || nextUrl !== localAcc.url) updated.push(localAcc.id)
@@ -288,14 +288,14 @@ export function createAndroidHubBridge(): SocialHubAPI {
       }
 
       for (const remote of remoteMap.values()) {
-        if (!nextAccounts.some((a) => a.id === remote.ws_acc_id && a.workspaceId === workspaceId)) {
+        if (!nextAccounts.some((a) => a.id === remote.ws_app_id && a.workspaceId === workspaceId)) {
           const appId = CUSTOM_APP_ID
           nextAccounts.push({
-            id: remote.ws_acc_id,
+            id: remote.ws_app_id,
             workspaceId,
-            name: remote.ws_acc_name?.trim() || 'Account',
+            name: remote.ws_app_name?.trim() || 'App',
             appId,
-            url: remote.ws_acc_link?.trim() || 'https://google.com',
+            url: remote.ws_app_link?.trim() || 'https://google.com',
             color: ACCOUNT_COLORS[nextAccounts.length % ACCOUNT_COLORS.length],
             muted: false,
             createdAt: new Date().toISOString(),
@@ -303,7 +303,7 @@ export function createAndroidHubBridge(): SocialHubAPI {
             permissions: { ...DEFAULT_ACCOUNT_PERMISSIONS },
             syncedToCloud: true
           })
-          added.push(remote.ws_acc_id)
+          added.push(remote.ws_app_id)
         }
       }
 

@@ -9,6 +9,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   arrayUnion,
   arrayRemove,
   runTransaction,
@@ -24,17 +25,17 @@ import { USERS_COLLECTION, USER_DIRECTORY_COLLECTION, type FirestoreUserDocument
 export const WORKSPACES_COLLECTION = 'workspaces'
 export type { FirestorePasswordRecord }
 
-export interface FirestoreAccountItem {
-  ws_acc_id: string
-  ws_acc_name: string
-  ws_acc_link: string
+export interface FirestoreAppItem {
+  ws_app_id: string
+  ws_app_name: string
+  ws_app_link: string
 }
 
 export interface FirestoreWorkspaceDocument {
   ws_id: string
   ws_name?: string
   ws_owner_id: string
-  ws_accounts: FirestoreAccountItem[]
+  ws_apps: FirestoreAppItem[]
   ws_passwords: FirestorePasswordRecord[]
   ws_status: number
   ws_users_ids: string[]
@@ -120,49 +121,49 @@ export function isAuthorizedUser(uid: string, docData: Partial<FirestoreWorkspac
   return false
 }
 
-export function mapAccountToFirestore(account: { id: string; name: string; url?: string }): FirestoreAccountItem {
+export function mapAccountToFirestore(account: { id: string; name: string; url?: string }): FirestoreAppItem {
   return {
-    ws_acc_id: account.id,
-    ws_acc_name: account.name || '',
-    ws_acc_link: account.url || ''
+    ws_app_id: account.id,
+    ws_app_name: account.name || '',
+    ws_app_link: account.url || ''
   }
 }
 
 /**
- * Merges local accounts into existing remote Firestore account records without duplicates.
+ * Merges local apps into existing remote Firestore app records without duplicates.
  */
 export function mergeAccountLists(
-  existingAccounts: FirestoreAccountItem[],
-  incomingAccounts: FirestoreAccountItem[]
-): FirestoreAccountItem[] {
-  const result: FirestoreAccountItem[] = []
+  existingApps: FirestoreAppItem[],
+  incomingApps: FirestoreAppItem[]
+): FirestoreAppItem[] {
+  const result: FirestoreAppItem[] = []
   const seenIds = new Set<string>()
 
-  // Existing remote accounts
-  for (const acc of existingAccounts || []) {
-    if (acc && acc.ws_acc_id && !seenIds.has(acc.ws_acc_id)) {
-      result.push({ ...acc })
-      seenIds.add(acc.ws_acc_id)
+  // Existing remote apps
+  for (const app of existingApps || []) {
+    if (app && app.ws_app_id && !seenIds.has(app.ws_app_id)) {
+      result.push({ ...app })
+      seenIds.add(app.ws_app_id)
     }
   }
 
   // Incoming updates or additions
-  for (const inc of incomingAccounts || []) {
-    if (!inc || !inc.ws_acc_id) continue
-    const idx = result.findIndex((item) => item.ws_acc_id === inc.ws_acc_id)
+  for (const inc of incomingApps || []) {
+    if (!inc || !inc.ws_app_id) continue
+    const idx = result.findIndex((item) => item.ws_app_id === inc.ws_app_id)
     if (idx >= 0) {
       result[idx] = {
-        ws_acc_id: inc.ws_acc_id,
-        ws_acc_name: inc.ws_acc_name !== undefined ? inc.ws_acc_name : result[idx].ws_acc_name,
-        ws_acc_link: inc.ws_acc_link !== undefined ? inc.ws_acc_link : result[idx].ws_acc_link
+        ws_app_id: inc.ws_app_id,
+        ws_app_name: inc.ws_app_name !== undefined ? inc.ws_app_name : result[idx].ws_app_name,
+        ws_app_link: inc.ws_app_link !== undefined ? inc.ws_app_link : result[idx].ws_app_link
       }
     } else {
       result.push({
-        ws_acc_id: inc.ws_acc_id,
-        ws_acc_name: inc.ws_acc_name || '',
-        ws_acc_link: inc.ws_acc_link || ''
+        ws_app_id: inc.ws_app_id,
+        ws_app_name: inc.ws_app_name || '',
+        ws_app_link: inc.ws_app_link || ''
       })
-      seenIds.add(inc.ws_acc_id)
+      seenIds.add(inc.ws_app_id)
     }
   }
 
@@ -175,7 +176,7 @@ export function mergeAccountLists(
 export async function syncWorkspaceCreation(
   user: User | null,
   workspace: { id: string; name?: string },
-  initialAccounts: FirestoreAccountItem[] = [],
+  initialApps: FirestoreAppItem[] = [],
   firestoreInstance?: Firestore
 ): Promise<FirestoreWorkspaceDocument | null> {
   if (!user || !user.uid || !workspace || !workspace.id) {
@@ -197,7 +198,7 @@ export async function syncWorkspaceCreation(
       ws_id: workspace.id,
       ws_name: cleanName,
       ws_owner_id: user.uid,
-      ws_accounts: initialAccounts,
+      ws_apps: initialApps,
       ws_passwords: [],
       ws_status: 1,
       ws_users_ids: [user.uid],
@@ -303,16 +304,16 @@ export async function syncAccountAddition(
         throw new Error('Unauthorized workspace modification')
       }
 
-      const existingAccounts: FirestoreAccountItem[] = Array.isArray(data.ws_accounts) ? [...data.ws_accounts] : []
-      const idx = existingAccounts.findIndex((a) => a.ws_acc_id === account.id)
+      const existingApps: FirestoreAppItem[] = Array.isArray(data.ws_apps) ? [...data.ws_apps] : []
+      const idx = existingApps.findIndex((a) => a.ws_app_id === account.id)
       if (idx >= 0) {
-        existingAccounts[idx] = item
+        existingApps[idx] = item
       } else {
-        existingAccounts.push(item)
+        existingApps.push(item)
       }
 
       const updates: Record<string, any> = {
-        ws_accounts: existingAccounts,
+        ws_apps: existingApps,
         ws_at_updated: serverTimestamp()
       }
       if (!data.ws_at_created) {
@@ -370,24 +371,24 @@ export async function syncAccountUpdate(
         throw new Error('Unauthorized workspace modification')
       }
 
-      const existingAccounts: FirestoreAccountItem[] = Array.isArray(data.ws_accounts) ? [...data.ws_accounts] : []
-      const idx = existingAccounts.findIndex((a) => a.ws_acc_id === account.id)
+      const existingApps: FirestoreAppItem[] = Array.isArray(data.ws_apps) ? [...data.ws_apps] : []
+      const idx = existingApps.findIndex((a) => a.ws_app_id === account.id)
       if (idx >= 0) {
-        existingAccounts[idx] = {
-          ws_acc_id: account.id,
-          ws_acc_name: account.name !== undefined ? account.name : existingAccounts[idx].ws_acc_name,
-          ws_acc_link: account.url !== undefined ? account.url : existingAccounts[idx].ws_acc_link
+        existingApps[idx] = {
+          ws_app_id: account.id,
+          ws_app_name: account.name !== undefined ? account.name : existingApps[idx].ws_app_name,
+          ws_app_link: account.url !== undefined ? account.url : existingApps[idx].ws_app_link
         }
       } else {
-        existingAccounts.push({
-          ws_acc_id: account.id,
-          ws_acc_name: account.name || '',
-          ws_acc_link: account.url || ''
+        existingApps.push({
+          ws_app_id: account.id,
+          ws_app_name: account.name || '',
+          ws_app_link: account.url || ''
         })
       }
 
       const updates: Record<string, any> = {
-        ws_accounts: existingAccounts,
+        ws_apps: existingApps,
         ws_at_updated: serverTimestamp()
       }
       if (!data.ws_at_created) {
@@ -442,10 +443,10 @@ export async function syncAccountRemoval(
         throw new Error('Unauthorized workspace modification')
       }
 
-      const existingAccounts: FirestoreAccountItem[] = Array.isArray(data.ws_accounts) ? [...data.ws_accounts] : []
-      const filtered = existingAccounts.filter((a) => a.ws_acc_id !== accountId)
+      const existingApps: FirestoreAppItem[] = Array.isArray(data.ws_apps) ? [...data.ws_apps] : []
+      const filtered = existingApps.filter((a) => a.ws_app_id !== accountId)
       const updates: Record<string, any> = {
-        ws_accounts: filtered,
+        ws_apps: filtered,
         ws_at_updated: serverTimestamp()
       }
       if (!data.ws_at_created) {
@@ -551,11 +552,32 @@ export async function syncUserWorkspaces(
     )
 
     for (const docSnap of allDocs) {
-      const rawData = docSnap.data() as FirestoreWorkspaceDocument
+      const rawData = docSnap.data() as Record<string, any>
+      const hasLegacyAccounts = Object.prototype.hasOwnProperty.call(rawData, 'ws_accounts')
+      const existingWsApps: FirestoreAppItem[] = Array.isArray(rawData.ws_apps) ? rawData.ws_apps : []
+
       const data: FirestoreWorkspaceDocument = {
-        ...rawData,
-        ws_id: rawData.ws_id || docSnap.id
+        ...(rawData as FirestoreWorkspaceDocument),
+        ws_id: rawData.ws_id || docSnap.id,
+        ws_apps: existingWsApps
       }
+      // If legacy-only document has ws_accounts and no ws_apps yet, derive ws_apps in memory before owner cleanup
+      if (!Array.isArray(rawData.ws_apps) && Array.isArray(rawData.ws_accounts)) {
+        const migrated: FirestoreAppItem[] = []
+        const seen = new Set<string>()
+        for (const item of rawData.ws_accounts) {
+          const id = (item?.ws_app_id || item?.ws_acc_id || '').trim()
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+          migrated.push({
+            ws_app_id: id,
+            ws_app_name: String(item?.ws_app_name ?? item?.ws_acc_name ?? ''),
+            ws_app_link: String(item?.ws_app_link ?? item?.ws_acc_link ?? '')
+          })
+        }
+        data.ws_apps = migrated
+      }
+
       remoteWorkspaces.push(data)
       setLocalWorkspaceOwner(data.ws_id, data.ws_owner_id || user.uid)
 
@@ -565,6 +587,14 @@ export async function syncUserWorkspaces(
 
       const docRef = doc(db, WORKSPACES_COLLECTION, data.ws_id)
       const updates: Record<string, any> = {}
+
+      // One-time idempotent cleanup of legacy ws_accounts field on owner workspace documents
+      if (hasLegacyAccounts) {
+        if (!Array.isArray(rawData.ws_apps)) {
+          updates.ws_apps = data.ws_apps
+        }
+        updates.ws_accounts = deleteField()
+      }
 
       // Existing workspace migration: safely add missing timestamp fields without modifying existing values
       if (!data.ws_at_created) {
@@ -588,15 +618,15 @@ export async function syncUserWorkspaces(
       }
 
       if (localWs) {
-        // Only upload local accounts that are NOT yet synced to cloud (pending offline accounts)
+        // Only upload local apps that are NOT yet synced to cloud (pending offline apps)
         const pendingLocalAccounts = (localAccounts || [])
           .filter((a) => a.workspaceId === localWs.id && !(a as any).syncedToCloud)
           .map(mapAccountToFirestore)
         if (pendingLocalAccounts.length > 0) {
-          const mergedAccounts = mergeAccountLists(data.ws_accounts || [], pendingLocalAccounts)
-          if (JSON.stringify(mergedAccounts) !== JSON.stringify(data.ws_accounts || [])) {
-            updates.ws_accounts = mergedAccounts
-            data.ws_accounts = mergedAccounts
+          const mergedApps = mergeAccountLists(data.ws_apps || [], pendingLocalAccounts)
+          if (JSON.stringify(mergedApps) !== JSON.stringify(data.ws_apps || [])) {
+            updates.ws_apps = mergedApps
+            data.ws_apps = mergedApps
             updates.ws_at_updated = serverTimestamp()
           }
         }
@@ -835,7 +865,12 @@ export async function syncWorkspaceOnSwitch(
     const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
     const snap = await getDoc(docRef)
     if (!snap.exists()) return null
-    const data = snap.data() as FirestoreWorkspaceDocument
+    const rawData = snap.data() as FirestoreWorkspaceDocument
+    const data: FirestoreWorkspaceDocument = {
+      ...rawData,
+      ws_id: rawData.ws_id || snap.id,
+      ws_apps: Array.isArray(rawData.ws_apps) ? rawData.ws_apps : []
+    }
     if (!isAuthorizedUser(user.uid, data)) return null
 
     const updates: Record<string, any> = {

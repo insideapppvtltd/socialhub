@@ -171,7 +171,7 @@ export default function App() {
     }
     const currentWs = state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
     if (currentWs?.ownerId && firebaseUser && currentWs.ownerId !== firebaseUser.uid) {
-      showToast('Only the workspace owner can add accounts to this workspace.')
+      showToast('Only the workspace owner can add apps to this workspace.')
       return
     }
     setDialog({ kind: 'add' })
@@ -203,7 +203,7 @@ export default function App() {
       } else {
         if (!appId) throw new Error('Select an app or website.')
         const targetWsId = workspaceId || state.activeWorkspaceId || state.workspaces[0]?.id
-        if (!targetWsId) throw new Error('Create a workspace before adding an account.')
+        if (!targetWsId) throw new Error('Create a workspace before adding an app.')
         const added = await window.socialHub.addAccount({ name, appId, url, workspaceId: targetWsId })
         if (firebaseUser) {
           void syncAccountAddition(firebaseUser, added.workspaceId, {
@@ -219,7 +219,7 @@ export default function App() {
       }
       setDialog(null)
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not add account.')
+      showToast(error instanceof Error ? error.message : 'Could not add app.')
     }
   }, [dialog, firebaseUser, state.activeWorkspaceId, state.workspaces, showToast])
 
@@ -234,9 +234,9 @@ export default function App() {
         })
       }
       setDialog(null)
-      showToast('Account updated.')
+      showToast('App updated.')
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'Could not update account.')
+      showToast(error instanceof Error ? error.message : 'Could not update app.')
     }
   }, [firebaseUser, showToast])
 
@@ -393,11 +393,11 @@ export default function App() {
         const validRemoteIds = (result.remoteWorkspaces || []).map((rw) => rw.ws_id)
         syncLocalWorkspaceOwnersWithRemote(validRemoteIds, user.uid)
 
-        // Reconcile accounts and passwords for each remote workspace
+        // Reconcile apps and passwords for each remote workspace
         for (const rw of result.remoteWorkspaces || []) {
-          // Reconcile remote accounts for workspace
-          await window.socialHub.reconcileRemoteAccounts(rw.ws_id, rw.ws_accounts || []).catch((err) => {
-            console.warn(`[AUTH][ACCOUNTS] Could not reconcile accounts for workspace ${rw.ws_id}:`, err)
+          // Reconcile remote apps for workspace
+          await window.socialHub.reconcileRemoteAccounts(rw.ws_id, rw.ws_apps || []).catch((err) => {
+            console.warn(`[AUTH][APPS] Could not reconcile apps for workspace ${rw.ws_id}:`, err)
           })
 
           // Reconcile passwords for workspace
@@ -467,8 +467,8 @@ export default function App() {
                 await window.socialHub.renameWorkspace(workspaceId, cleanRemoteName).catch(() => {})
               }
             }
-            // Reconcile accounts for workspace
-            await window.socialHub.reconcileRemoteAccounts(workspaceId, docData.ws_accounts || []).catch(() => {})
+            // Reconcile apps for workspace
+            await window.socialHub.reconcileRemoteAccounts(workspaceId, docData.ws_apps || []).catch(() => {})
             // Reconcile passwords for workspace
             const syncResult = await window.socialHub.syncWorkspaceCredentialsWithCloud(
               workspaceId,
@@ -917,9 +917,9 @@ export default function App() {
           </div>
         </div>
 
-        <section className="account-section" aria-label="Web app accounts">
+        <section className="account-section" aria-label="Workspace apps">
           <div className="section-heading">
-            <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
+            <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} APPS` : 'YOUR APPS'}</span>
             {hasWorkspaces && (
               <div className="section-heading-actions">
                 {activeWorkspace && isActiveWorkspaceOwner && firebaseUser && (
@@ -938,15 +938,15 @@ export default function App() {
                     type="button"
                     className={`account-sort-trigger ${sortMenuOpen ? 'open' : ''}`}
                     onClick={() => setSortMenuOpen((open) => !open)}
-                    title={`Sort accounts (${accountSortBy === 'lastUsed' ? 'Last Used' : 'Name'})`}
-                    aria-label="Sort accounts"
+                    title={`Sort apps (${accountSortBy === 'lastUsed' ? 'Last Used' : 'Name'})`}
+                    aria-label="Sort apps"
                     aria-haspopup="menu"
                     aria-expanded={sortMenuOpen}
                   >
                     <ArrowUpDown size={12} />
                   </button>
                 {sortMenuOpen && (
-                  <div className="account-sort-menu" role="menu" aria-label="Account sorting options">
+                  <div className="account-sort-menu" role="menu" aria-label="App sorting options">
                     <button
                       type="button"
                       role="menuitemradio"
@@ -996,10 +996,10 @@ export default function App() {
               </div>
             ) : workspaceAccounts.length === 0 ? (
               <div className="workspace-empty-state">
-                <p>{isActiveWorkspaceOwner ? 'No accounts in this workspace' : 'No accounts shared in this workspace'}</p>
+                <p>{isActiveWorkspaceOwner ? 'No apps in this workspace' : 'No apps shared in this workspace'}</p>
                 {isActiveWorkspaceOwner && (
                   <button className="add-account-empty" onClick={() => void addAccount()}>
-                    <Plus size={13} /> Add an account
+                    <Plus size={13} /> Add an app
                   </button>
                 )}
               </div>
@@ -1022,7 +1022,7 @@ export default function App() {
           {hasWorkspaces && workspaceAccounts.length > 0 && isActiveWorkspaceOwner && (
             <button className="add-account" onClick={() => void addAccount()}>
               <span className="add-icon"><Plus size={16} /></span>
-              <span>Add an account</span>
+              <span>Add an app</span>
               <kbd>⌘ N</kbd>
             </button>
           )}
@@ -1032,7 +1032,7 @@ export default function App() {
           <div className="privacy-icon"><ShieldCheck size={17} /></div>
           <div>
             <strong>Private by design</strong>
-            <p>Each account has its own secure browser session.</p>
+            <p>Each app has its own secure browser session.</p>
           </div>
         </section>
 
@@ -1539,7 +1539,7 @@ export default function App() {
                 if (firebaseUser) {
                   void syncAccountRemoval(firebaseUser, target.workspaceId, target.id)
                 }
-              }, 'Account removed.')
+              }, 'App removed.')
               setDialog(null)
             } else if (dialog.kind === 'confirm-cache') {
               void invoke(() => window.socialHub.clearCache(dialog.account.id), 'Cache cleared.')
@@ -1646,10 +1646,10 @@ function HubDialog({
           if (typeof url !== 'string' || !url.trim()) return
           onSubmitEditAccount(dialog.account.id, name.trim(), url.trim())
         }}>
-          <h2>Edit account</h2>
-          <p>Update the name or website URL for this account.</p>
+          <h2>Edit app</h2>
+          <p>Update the name or website URL for this app.</p>
 
-          <label htmlFor="edit-account-name">Account name</label>
+          <label htmlFor="edit-account-name">App name</label>
           <input
             id="edit-account-name"
             name="account-name"
@@ -1704,8 +1704,8 @@ function HubDialog({
             }
           }
         }}>
-          <h2>{rename ? 'Rename account' : 'Add an account'}</h2>
-          <p>{rename ? 'Choose a name for this account.' : 'Choose an app or add any secure website. Each account gets its own login session.'}</p>
+          <h2>{rename ? 'Rename app' : 'Add an app'}</h2>
+          <p>{rename ? 'Choose a name for this app.' : 'Choose an app or add any secure website. Each app gets its own login session.'}</p>
           {!rename && (
             <>
               <label htmlFor="account-workspace">Workspace</label>
@@ -1747,7 +1747,7 @@ function HubDialog({
               )}
             </>
           )}
-          <label htmlFor="account-name">Account name</label>
+          <label htmlFor="account-name">App name</label>
           <input id="account-name" name="account-name" maxLength={40} required autoFocus defaultValue={rename ? dialog.account.name : ''} placeholder="e.g. Personal" />
           <div className="dialog-actions">
             <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
@@ -1776,7 +1776,7 @@ function HubDialog({
           }
         }}>
           <h2>{isRename ? 'Rename workspace' : 'Add workspace'}</h2>
-          <p>{isRename ? 'Choose a new name for this workspace.' : 'Create a new workspace to group your accounts.'}</p>
+          <p>{isRename ? 'Choose a new name for this workspace.' : 'Create a new workspace to group your apps.'}</p>
           <label htmlFor="workspace-name">Workspace name</label>
           <input
             id="workspace-name"
@@ -1807,7 +1807,7 @@ function HubDialog({
           <section className="hub-dialog" role="alertdialog" aria-modal="true">
             <h2>Cannot delete workspace</h2>
             <p>
-              “{dialog.workspace.name}” contains {accountCount} account{accountCount === 1 ? '' : 's'}. You must remove or move all accounts before this workspace can be deleted.
+              “{dialog.workspace.name}” contains {accountCount} app{accountCount === 1 ? '' : 's'}. You must remove or move all apps before this workspace can be deleted.
             </p>
             <div className="dialog-actions">
               <button type="button" className="dialog-primary" onClick={onClose}>Understood</button>
@@ -1867,7 +1867,7 @@ function HubDialog({
       if (event.target === event.currentTarget) onClose()
     }}>
       <section className="hub-dialog" role="alertdialog" aria-modal="true">
-        <h2>{remove ? 'Remove account?' : 'Clear account cache?'}</h2>
+        <h2>{remove ? 'Remove app?' : 'Clear app cache?'}</h2>
         <p>
           {remove
             ? `“${dialog.account.name}” and its saved site session data will be permanently deleted.`
@@ -1876,7 +1876,7 @@ function HubDialog({
         <div className="dialog-actions">
           <button type="button" className="dialog-secondary" onClick={onClose}>Cancel</button>
           <button type="button" className={remove ? 'dialog-danger' : 'dialog-primary'} onClick={onConfirm}>
-            {remove ? 'Remove account' : 'Clear cache'}
+            {remove ? 'Remove app' : 'Clear cache'}
           </button>
         </div>
       </section>
@@ -1949,8 +1949,8 @@ function AccountContextMenu({
   if (!account) return null
   return (
     <div className="context-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
-      {isWorkspaceOwner && <button onClick={() => onEdit(account)}><Pencil size={14} />Edit account</button>}
-      {isWorkspaceOwner && <button onClick={() => onRename(account)}>Rename account</button>}
+      {isWorkspaceOwner && <button onClick={() => onEdit(account)}><Pencil size={14} />Edit app</button>}
+      {isWorkspaceOwner && <button onClick={() => onRename(account)}>Rename app</button>}
       <button onClick={() => onMute(account)}>{account.muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{account.muted ? 'Unmute' : 'Mute'}</button>
       <button onClick={() => onReload(account)}><RefreshCw size={14} />Reload</button>
       <button onClick={() => onClearCache(account)}>Clear cache</button>
@@ -2468,7 +2468,7 @@ function CollaboratorsModal({
     >
       <section className="hub-dialog collab-dialog" role="dialog" aria-modal="true" aria-label="Workspace collaborators">
         <h2>Collaborators — {workspace.name}</h2>
-        <p>Manage who can access this workspace and its accounts.</p>
+        <p>Manage who can access this workspace and its apps.</p>
 
         {error && <div className="collab-feedback error" role="alert">{error}</div>}
         {success && <div className="collab-feedback success" role="status">{success}</div>}

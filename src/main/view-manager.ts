@@ -385,7 +385,7 @@ export class ViewManager {
 
   reconcileRemoteAccounts(
     workspaceId: string,
-    remoteAccounts: Array<{ ws_acc_id: string; ws_acc_name: string; ws_acc_link: string }>
+    remoteApps: Array<{ ws_app_id: string; ws_app_name: string; ws_app_link: string }>
   ): { added: string[]; removed: string[]; updated: string[] } {
     const added: string[] = []
     const removed: string[] = []
@@ -393,23 +393,23 @@ export class ViewManager {
 
     const allAccounts = this.accounts.getRawStoreAccounts()
     const localInWs = allAccounts.filter((a) => a.workspaceId === workspaceId)
-    const remoteMap = new Map(remoteAccounts.map((a) => [a.ws_acc_id, a]))
+    const remoteMap = new Map(remoteApps.filter((a) => a.ws_app_id).map((a) => [a.ws_app_id, a]))
 
-    // 1. Process local accounts: update modified or remove deleted
+    // 1. Process local apps: update modified or remove deleted
     for (const localAcc of localInWs) {
       const remote = remoteMap.get(localAcc.id)
       if (remote) {
-        const nameChanged = remote.ws_acc_name && remote.ws_acc_name.trim() !== localAcc.name
-        const urlChanged = remote.ws_acc_link && remote.ws_acc_link.trim() !== localAcc.url
+        const nameChanged = remote.ws_app_name && remote.ws_app_name.trim() !== localAcc.name
+        const urlChanged = remote.ws_app_link && remote.ws_app_link.trim() !== localAcc.url
         if (nameChanged || urlChanged) {
           try {
             this.updateAccount(localAcc.id, {
-              name: remote.ws_acc_name ? remote.ws_acc_name.trim() : undefined,
-              url: remote.ws_acc_link ? remote.ws_acc_link.trim() : undefined
+              name: remote.ws_app_name ? remote.ws_app_name.trim() : undefined,
+              url: remote.ws_app_link ? remote.ws_app_link.trim() : undefined
             })
             updated.push(localAcc.id)
           } catch (e) {
-            console.warn(`[VIEW_MANAGER] Could not update account ${localAcc.id}:`, e)
+            console.warn(`[VIEW_MANAGER] Could not update app ${localAcc.id}:`, e)
           }
         }
         if (!localAcc.syncedToCloud) {
@@ -424,24 +424,24 @@ export class ViewManager {
       }
     }
 
-    // 2. Add remote accounts not present locally
-    for (const remote of remoteAccounts) {
-      if (!remote.ws_acc_id) continue
-      const exists = localInWs.some((a) => a.id === remote.ws_acc_id)
+    // 2. Add remote apps not present locally
+    for (const remote of remoteApps) {
+      if (!remote.ws_app_id) continue
+      const exists = localInWs.some((a) => a.id === remote.ws_app_id)
       if (!exists) {
         try {
           const imported = this.accounts.addWithId(
-            remote.ws_acc_id,
-            remote.ws_acc_name || 'Account',
-            resolveCatalogAppId(remote.ws_acc_link),
-            remote.ws_acc_link,
+            remote.ws_app_id,
+            remote.ws_app_name || 'App',
+            resolveCatalogAppId(remote.ws_app_link),
+            remote.ws_app_link,
             workspaceId,
             { syncedToCloud: true }
           )
           this.createView(imported)
-          added.push(remote.ws_acc_id)
+          added.push(remote.ws_app_id)
         } catch (e) {
-          console.warn(`[VIEW_MANAGER] Could not import remote account ${remote.ws_acc_id}:`, e)
+          console.warn(`[VIEW_MANAGER] Could not import remote app ${remote.ws_app_id}:`, e)
         }
       }
     }

@@ -244,7 +244,7 @@ export function WelcomeScreen({ currentTheme, onThemeChange }: WelcomeScreenProp
           <span>
             {isAndroidRuntime()
               ? 'Android Phase 1: Use Anonymous Sign-In for testing. Google Sign-In on Android is pending native adaptation (Phase 2).'
-              : 'Sessions, accounts, and notifications remain safely stored on this computer.'}
+              : 'Sessions, apps, and notifications remain safely stored on this computer.'}
           </span>
         </div>
       </div>
