@@ -170,7 +170,7 @@ export class AccountManager {
   }
 
   reconcileRemoteWorkspaces(
-    remoteWorkspaces: Array<{ ws_id: string; ws_name: string; ws_owner_id: string }>
+    remoteWorkspaces: Array<{ ws_id: string; ws_name: string; ws_owner_id: string; ws_users_ids?: string[] }>
   ): { added: string[]; removed: string[]; updated: string[] } {
     if (!this.currentUserUid) return { added: [], removed: [], updated: [] }
 
@@ -187,16 +187,24 @@ export class AccountManager {
     // 1. Remote workspaces: add new or update existing
     for (const rw of remoteWorkspaces) {
       if (!rw.ws_id) continue
-      owners[rw.ws_id] = rw.ws_owner_id || this.currentUserUid
+      const remoteOwner = (rw.ws_owner_id || this.currentUserUid).trim()
+      owners[rw.ws_id] = remoteOwner
+      const remoteMembers = Array.isArray(rw.ws_users_ids)
+        ? rw.ws_users_ids.map((id) => String(id).trim()).filter(Boolean)
+        : [remoteOwner]
       const idx = modified.findIndex((w) => w.id === rw.ws_id)
       if (idx >= 0) {
         const existing = modified[idx]
         const cleanName = (rw.ws_name || '').trim().slice(0, 40)
-        if (cleanName && cleanName !== existing.name) {
+        const nextName = cleanName || existing.name
+        const membersChanged = JSON.stringify(existing.memberIds || []) !== JSON.stringify(remoteMembers)
+        const ownerChanged = existing.ownerId !== remoteOwner
+        if (nextName !== existing.name || membersChanged || ownerChanged) {
           modified[idx] = {
             ...existing,
-            name: cleanName,
-            ownerId: rw.ws_owner_id || existing.ownerId,
+            name: nextName,
+            ownerId: remoteOwner,
+            memberIds: remoteMembers,
             syncedToCloud: true
           }
           updated.push(rw.ws_id)
@@ -209,7 +217,8 @@ export class AccountManager {
           id: rw.ws_id,
           name: cleanName,
           createdAt: new Date().toISOString(),
-          ownerId: rw.ws_owner_id || this.currentUserUid,
+          ownerId: remoteOwner,
+          memberIds: remoteMembers,
           syncedToCloud: true
         }
         modified.push(imported)
@@ -221,7 +230,9 @@ export class AccountManager {
     const toKeep: Workspace[] = []
     for (const lw of modified) {
       const isUserWs =
-        lw.ownerId === this.currentUserUid || owners[lw.id] === this.currentUserUid
+        lw.ownerId === this.currentUserUid ||
+        owners[lw.id] === this.currentUserUid ||
+        (Array.isArray(lw.memberIds) && lw.memberIds.includes(this.currentUserUid))
       if (isUserWs) {
         if (!remoteMap.has(lw.id)) {
           // Workspace does not exist in remote authorized workspaces - remove it
@@ -363,10 +374,16 @@ export class AccountManager {
   // --- Workspaces CRUD ---
 
   listWorkspaces(): Workspace[] {
-    if (!this.currentUserUid) return []
+    const uid = this.currentUserUid
+    if (!uid) return []
     const all = (store.get('workspaces') as Workspace[]) || []
     const owners = store.get('workspaceOwners') || {}
-    return all.filter((w) => (w.ownerId && w.ownerId === this.currentUserUid) || owners[w.id] === this.currentUserUid)
+    return all.filter(
+      (w) =>
+        (w.ownerId && w.ownerId === uid) ||
+        owners[w.id] === uid ||
+        (Array.isArray(w.memberIds) && w.memberIds.includes(uid))
+    )
   }
 
   getWorkspace(id: string): Workspace | undefined {

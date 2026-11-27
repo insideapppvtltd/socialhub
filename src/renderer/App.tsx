@@ -16,6 +16,7 @@ import {
   KeyRound,
   Layers,
   Link,
+  Loader2,
   LogOut,
   MapPin,
   MessageSquare,
@@ -33,6 +34,7 @@ import {
   Sun,
   Trash2,
   User as UserIcon,
+  UserPlus,
   Video,
   Volume2,
   VolumeX,
@@ -57,8 +59,15 @@ import {
   syncAccountRemoval,
   syncLocalWorkspaceOwnersWithRemote,
   isAuthorizedUser,
+  fetchWorkspaceCollaborationDetails,
+  findRegisteredUserByEmail,
+  addWorkspaceCollaborator,
+  removeWorkspaceCollaborator,
+  isValidCollaboratorEmail,
   WORKSPACES_COLLECTION,
-  type FirestoreWorkspaceDocument
+  type FirestoreWorkspaceDocument,
+  type WorkspaceCollaborationDetails,
+  type WorkspaceCollaboratorProfile
 } from './firebase-workspaces'
 import { doc, getDoc } from 'firebase/firestore'
 import { WelcomeScreen } from './WelcomeScreen'
@@ -75,6 +84,7 @@ type EditorDialog =
   | { kind: 'add-workspace' }
   | { kind: 'rename-workspace'; workspace: Workspace }
   | { kind: 'delete-workspace'; workspace: Workspace }
+  | { kind: 'collaborators'; workspace: Workspace }
   | { kind: 'permissions'; account: Account }
   | { kind: 'global-permissions' }
   | null
@@ -155,8 +165,13 @@ export default function App() {
       setDialog({ kind: 'add-workspace' })
       return
     }
+    const currentWs = state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0]
+    if (currentWs?.ownerId && firebaseUser && currentWs.ownerId !== firebaseUser.uid) {
+      showToast('Only the workspace owner can add accounts to this workspace.')
+      return
+    }
     setDialog({ kind: 'add' })
-  }, [state.workspaces.length])
+  }, [state.workspaces, state.activeWorkspaceId, firebaseUser, showToast])
 
   const handleLogout = useCallback(async () => {
     try {
@@ -389,7 +404,12 @@ export default function App() {
             console.warn(`[AUTH][PASSWORDS] Could not sync credentials for workspace ${rw.ws_id}:`, err)
             return null
           })
-          if (syncResult && syncResult.remoteUpdated && Array.isArray(syncResult.mergedRecords)) {
+          if (
+            rw.ws_owner_id === user.uid &&
+            syncResult &&
+            syncResult.remoteUpdated &&
+            Array.isArray(syncResult.mergedRecords)
+          ) {
             await syncWorkspacePasswords(user, rw.ws_id, syncResult.mergedRecords).catch((err) => {
               console.warn(`[AUTH][PASSWORDS] Could not upload merged passwords for workspace ${rw.ws_id}:`, err)
             })
@@ -449,7 +469,12 @@ export default function App() {
               workspaceId,
               docData.ws_passwords || []
             ).catch(() => null)
-            if (syncResult && syncResult.remoteUpdated && Array.isArray(syncResult.mergedRecords)) {
+            if (
+              docData.ws_owner_id === firebaseUser.uid &&
+              syncResult &&
+              syncResult.remoteUpdated &&
+              Array.isArray(syncResult.mergedRecords)
+            ) {
               void syncWorkspacePasswords(firebaseUser, workspaceId, syncResult.mergedRecords)
             }
             const nextState = await window.socialHub.getState()
@@ -550,6 +575,8 @@ export default function App() {
     ? (state.workspaces.find((w) => w.id === state.activeWorkspaceId) ?? state.workspaces[0])
     : null
   const currentWorkspaceId = activeWorkspace?.id ?? null
+  const isActiveWorkspaceOwner =
+    !activeWorkspace || !activeWorkspace.ownerId || !firebaseUser || activeWorkspace.ownerId === firebaseUser.uid
 
   // Whenever the active workspace is visited or switched by the authenticated user, update ws_at_last_visit
   useEffect(() => {
@@ -802,6 +829,7 @@ export default function App() {
                     state.workspaces.map((ws) => {
                     const count = state.accounts.filter((a) => a.workspaceId === ws.id).length
                     const isActive = ws.id === currentWorkspaceId
+                    const isWsOwner = !ws.ownerId || !firebaseUser || ws.ownerId === firebaseUser.uid
                     return (
                       <div
                         key={ws.id}
@@ -811,29 +839,32 @@ export default function App() {
                         }}
                       >
                         <span className="ws-item-title">{ws.name}</span>
+                        {!isWsOwner && <span className="ws-shared-pill">Shared</span>}
                         <span className="ws-item-count">{count}</span>
-                        <div className="ws-item-actions" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            className="ws-action-btn"
-                            title="Rename Workspace"
-                            onClick={() => {
-                              setWorkspaceMenuOpen(false)
-                              setDialog({ kind: 'rename-workspace', workspace: ws })
-                            }}
-                          >
-                            <Pencil size={11} />
-                          </button>
-                          <button
-                            className="ws-action-btn danger"
-                            title="Delete Workspace"
-                            onClick={() => {
-                              setWorkspaceMenuOpen(false)
-                              setDialog({ kind: 'delete-workspace', workspace: ws })
-                            }}
-                          >
-                            <Trash2 size={11} />
-                          </button>
-                        </div>
+                        {isWsOwner && (
+                          <div className="ws-item-actions" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              className="ws-action-btn"
+                              title="Rename Workspace"
+                              onClick={() => {
+                                setWorkspaceMenuOpen(false)
+                                setDialog({ kind: 'rename-workspace', workspace: ws })
+                              }}
+                            >
+                              <Pencil size={11} />
+                            </button>
+                            <button
+                              className="ws-action-btn danger"
+                              title="Delete Workspace"
+                              onClick={() => {
+                                setWorkspaceMenuOpen(false)
+                                setDialog({ kind: 'delete-workspace', workspace: ws })
+                              }}
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )
                   })
@@ -861,18 +892,30 @@ export default function App() {
           <div className="section-heading">
             <span>{activeWorkspace ? `${activeWorkspace.name.toUpperCase()} ACCOUNTS` : 'YOUR ACCOUNTS'}</span>
             {hasWorkspaces && (
-              <div className="account-sort-container">
-                <button
-                  type="button"
-                  className={`account-sort-trigger ${sortMenuOpen ? 'open' : ''}`}
-                  onClick={() => setSortMenuOpen((open) => !open)}
-                  title={`Sort accounts (${accountSortBy === 'lastUsed' ? 'Last Used' : 'Name'})`}
-                  aria-label="Sort accounts"
-                  aria-haspopup="menu"
-                  aria-expanded={sortMenuOpen}
-                >
-                  <ArrowUpDown size={12} />
-                </button>
+              <div className="section-heading-actions">
+                {activeWorkspace && isActiveWorkspaceOwner && firebaseUser && (
+                  <button
+                    type="button"
+                    className="section-icon-btn"
+                    onClick={() => setDialog({ kind: 'collaborators', workspace: activeWorkspace })}
+                    title="Manage Collaborators"
+                    aria-label="Manage Collaborators"
+                  >
+                    <UserPlus size={13} />
+                  </button>
+                )}
+                <div className="account-sort-container">
+                  <button
+                    type="button"
+                    className={`account-sort-trigger ${sortMenuOpen ? 'open' : ''}`}
+                    onClick={() => setSortMenuOpen((open) => !open)}
+                    title={`Sort accounts (${accountSortBy === 'lastUsed' ? 'Last Used' : 'Name'})`}
+                    aria-label="Sort accounts"
+                    aria-haspopup="menu"
+                    aria-expanded={sortMenuOpen}
+                  >
+                    <ArrowUpDown size={12} />
+                  </button>
                 {sortMenuOpen && (
                   <div className="account-sort-menu" role="menu" aria-label="Account sorting options">
                     <button
@@ -903,6 +946,7 @@ export default function App() {
                     </button>
                   </div>
                 )}
+                </div>
               </div>
             )}
           </div>
@@ -923,10 +967,12 @@ export default function App() {
               </div>
             ) : workspaceAccounts.length === 0 ? (
               <div className="workspace-empty-state">
-                <p>No accounts in this workspace</p>
-                <button className="add-account-empty" onClick={() => void addAccount()}>
-                  <Plus size={13} /> Add an account
-                </button>
+                <p>{isActiveWorkspaceOwner ? 'No accounts in this workspace' : 'No accounts shared in this workspace'}</p>
+                {isActiveWorkspaceOwner && (
+                  <button className="add-account-empty" onClick={() => void addAccount()}>
+                    <Plus size={13} /> Add an account
+                  </button>
+                )}
               </div>
             ) : (
               workspaceAccounts.map((account) => (
@@ -944,7 +990,7 @@ export default function App() {
             )}
           </nav>
 
-          {hasWorkspaces && workspaceAccounts.length > 0 && (
+          {hasWorkspaces && workspaceAccounts.length > 0 && isActiveWorkspaceOwner && (
             <button className="add-account" onClick={() => void addAccount()}>
               <span className="add-icon"><Plus size={16} /></span>
               <span>Add an account</span>
@@ -1374,6 +1420,7 @@ export default function App() {
           account={state.accounts.find((account) => account.id === menu.id)}
           x={menu.x}
           y={menu.y}
+          isWorkspaceOwner={isActiveWorkspaceOwner}
           onEdit={(account) => {
             setMenu(null)
             setDialog({ kind: 'edit', account })
@@ -1405,6 +1452,11 @@ export default function App() {
           workspaces={state.workspaces}
           accounts={state.accounts}
           activeWorkspaceId={currentWorkspaceId ?? null}
+          firebaseUser={firebaseUser}
+          showToast={showToast}
+          onCollaborationChanged={() => {
+            if (firebaseUser) void syncFirebaseData(firebaseUser)
+          }}
           onClose={() => setDialog(null)}
           onSubmitAccount={(name, appId, url, workspaceId) => void submitAccount(name, appId, url, workspaceId)}
           onSubmitEditAccount={(accountId, name, url) => void submitEditAccount(accountId, name, url)}
@@ -1461,6 +1513,9 @@ function HubDialog({
   accounts,
   activeWorkspaceId,
   globalDefaults,
+  firebaseUser,
+  showToast,
+  onCollaborationChanged,
   onClose,
   onSubmitAccount,
   onSubmitEditAccount,
@@ -1476,6 +1531,9 @@ function HubDialog({
   accounts: Account[]
   activeWorkspaceId: string | null
   globalDefaults: AccountPermissions
+  firebaseUser: FirebaseUser | null
+  showToast: (message: string) => void
+  onCollaborationChanged: () => void
   onClose: () => void
   onSubmitAccount: (name: string, appId?: string, url?: string, workspaceId?: string) => void
   onSubmitEditAccount: (accountId: string, name: string, url: string) => void
@@ -1487,6 +1545,18 @@ function HubDialog({
   onConfirm: () => void
 }) {
   const [appMode, setAppMode] = useState<'app' | 'custom'>('app')
+
+  if (dialog.kind === 'collaborators') {
+    return (
+      <CollaboratorsModal
+        workspace={dialog.workspace}
+        firebaseUser={firebaseUser}
+        showToast={showToast}
+        onCollaborationChanged={onCollaborationChanged}
+        onClose={onClose}
+      />
+    )
+  }
 
   if (dialog.kind === 'global-permissions') {
     return (
@@ -1803,6 +1873,7 @@ function AccountContextMenu({
   account,
   x,
   y,
+  isWorkspaceOwner,
   onEdit,
   onRename,
   onMute,
@@ -1814,6 +1885,7 @@ function AccountContextMenu({
   account?: Account
   x: number
   y: number
+  isWorkspaceOwner: boolean
   onEdit: (account: Account) => void
   onRename: (account: Account) => void
   onMute: (account: Account) => void
@@ -1825,14 +1897,18 @@ function AccountContextMenu({
   if (!account) return null
   return (
     <div className="context-menu" style={{ left: x, top: y }} onClick={(event) => event.stopPropagation()}>
-      <button onClick={() => onEdit(account)}><Pencil size={14} />Edit account</button>
-      <button onClick={() => onRename(account)}>Rename account</button>
+      {isWorkspaceOwner && <button onClick={() => onEdit(account)}><Pencil size={14} />Edit account</button>}
+      {isWorkspaceOwner && <button onClick={() => onRename(account)}>Rename account</button>}
       <button onClick={() => onMute(account)}>{account.muted ? <Volume2 size={14} /> : <VolumeX size={14} />}{account.muted ? 'Unmute' : 'Mute'}</button>
       <button onClick={() => onReload(account)}><RefreshCw size={14} />Reload</button>
       <button onClick={() => onClearCache(account)}>Clear cache</button>
       <button onClick={() => onPermissions(account)}><Shield size={14} />Permissions</button>
-      <hr />
-      <button className="danger" onClick={() => onRemove(account)}><Trash2 size={14} />Remove account</button>
+      {isWorkspaceOwner && (
+        <>
+          <hr />
+          <button className="danger" onClick={() => onRemove(account)}><Trash2 size={14} />Remove account</button>
+        </>
+      )}
     </div>
   )
 }
@@ -2214,6 +2290,285 @@ function GlobalPermissionsDialog({
           </button>
         </div>
       </form>
+    </div>
+  )
+}
+
+function CollaboratorsModal({
+  workspace,
+  firebaseUser,
+  showToast,
+  onCollaborationChanged,
+  onClose
+}: {
+  workspace: Workspace
+  firebaseUser: FirebaseUser | null
+  showToast: (message: string) => void
+  onCollaborationChanged: () => void
+  onClose: () => void
+}) {
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [details, setDetails] = useState<WorkspaceCollaborationDetails | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  const [emailInput, setEmailInput] = useState('')
+  const [confirmRemoveUid, setConfirmRemoveUid] = useState<string | null>(null)
+
+  const loadDetails = useCallback(async () => {
+    if (!firebaseUser) {
+      setError('You must be signed in to manage collaborators.')
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await fetchWorkspaceCollaborationDetails(firebaseUser, workspace.id)
+      setDetails(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load collaborators.')
+    } finally {
+      setLoading(false)
+    }
+  }, [firebaseUser, workspace.id])
+
+  useEffect(() => {
+    void loadDetails()
+  }, [loadDetails])
+
+  const isOwner = Boolean(firebaseUser && details && details.ownerId === firebaseUser.uid)
+
+  const handleAddCollaboratorSubmit = async () => {
+    if (busy || !firebaseUser) return
+    setError(null)
+    setSuccess(null)
+
+    const trimmed = emailInput.trim()
+    if (!isValidCollaboratorEmail(trimmed)) {
+      setError('Please enter a valid email address.')
+      return
+    }
+
+    setBusy(true)
+    try {
+      const found = await findRegisteredUserByEmail(trimmed)
+      if (!found) {
+        setError('No registered Social HUB user found with this email address.')
+        return
+      }
+      if (details && found.user_id === details.ownerId) {
+        setError('This user is the owner of this workspace.')
+        return
+      }
+      if (details && details.rawUserIds.includes(found.user_id)) {
+        setError('This user is already a collaborator in this workspace.')
+        return
+      }
+
+      const res = await addWorkspaceCollaborator(firebaseUser, workspace.id, found.user_id)
+      if (!res.added) {
+        setError(res.message)
+        return
+      }
+      setEmailInput('')
+      setSuccess('Collaborator added successfully.')
+      showToast(`${found.user_name || found.user_email} added as collaborator.`)
+      await loadDetails()
+      onCollaborationChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong while updating workspace collaborators.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleConfirmRemove = async (collaborator: WorkspaceCollaboratorProfile) => {
+    if (busy || !firebaseUser) return
+    setBusy(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const res = await removeWorkspaceCollaborator(firebaseUser, workspace.id, collaborator.user_id)
+      if (!res.removed) {
+        setError(res.message)
+        return
+      }
+      setConfirmRemoveUid(null)
+      setSuccess(res.message)
+      showToast(`${collaborator.user_name || collaborator.user_email} removed from workspace.`)
+      await loadDetails()
+      onCollaborationChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove collaborator.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose()
+      }}
+    >
+      <section className="hub-dialog collab-dialog" role="dialog" aria-modal="true" aria-label="Workspace collaborators">
+        <h2>Collaborators — {workspace.name}</h2>
+        <p>Manage who can access this workspace and its accounts.</p>
+
+        {error && <div className="collab-feedback error" role="alert">{error}</div>}
+        {success && <div className="collab-feedback success" role="status">{success}</div>}
+
+        {loading ? (
+          <div className="collab-loading">
+            <Loader2 size={15} className="spin-icon" />
+            <span>Loading workspace members...</span>
+          </div>
+        ) : (
+          <>
+            {/* Section A – Workspace Owner */}
+            <div className="collab-section">
+              <div className="collab-section-title">
+                <span>Workspace Owner</span>
+              </div>
+              {details?.owner ? (
+                <div className="collab-row owner-row">
+                  <div className="collab-user-info">
+                    <div className="collab-avatar">
+                      {details.owner.user_dp_link ? (
+                        <img src={details.owner.user_dp_link} alt="" referrerPolicy="no-referrer" />
+                      ) : (
+                        <UserIcon size={14} />
+                      )}
+                    </div>
+                    <div className="collab-user-text">
+                      <span className="collab-user-name">{details.owner.user_name}</span>
+                      <span className="collab-user-email">{details.owner.user_email || details.ownerId}</span>
+                    </div>
+                  </div>
+                  <span className="collab-owner-badge">OWNER</span>
+                </div>
+              ) : (
+                <div className="collab-empty">Owner profile unavailable.</div>
+              )}
+            </div>
+
+            {/* Section B – Existing Collaborators */}
+            <div className="collab-section">
+              <div className="collab-section-title">
+                <span>Collaborators ({details?.collaborators.length ?? 0})</span>
+              </div>
+              {!details || details.collaborators.length === 0 ? (
+                <div className="collab-empty">No collaborators added yet.</div>
+              ) : (
+                <div className="collab-list" role="list">
+                  {details.collaborators.map((collab) => {
+                    const isConfirming = confirmRemoveUid === collab.user_id
+                    return (
+                      <div key={collab.user_id} className="collab-row" role="listitem">
+                        <div className="collab-user-info">
+                          <div className="collab-avatar">
+                            {collab.user_dp_link ? (
+                              <img src={collab.user_dp_link} alt="" referrerPolicy="no-referrer" />
+                            ) : (
+                              <UserIcon size={14} />
+                            )}
+                          </div>
+                          <div className="collab-user-text">
+                            <span className="collab-user-name">{collab.user_name}</span>
+                            <span className="collab-user-email">{collab.user_email || collab.user_id}</span>
+                          </div>
+                        </div>
+                        {isOwner && (
+                          isConfirming ? (
+                            <div className="collab-confirm-actions">
+                              <button
+                                type="button"
+                                className="collab-mini-btn"
+                                disabled={busy}
+                                onClick={() => setConfirmRemoveUid(null)}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                className="collab-mini-btn danger"
+                                disabled={busy}
+                                onClick={() => void handleConfirmRemove(collab)}
+                              >
+                                {busy ? 'Removing...' : 'Confirm'}
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="collab-remove-btn"
+                              disabled={busy}
+                              onClick={() => {
+                                setError(null)
+                                setSuccess(null)
+                                setConfirmRemoveUid(collab.user_id)
+                              }}
+                            >
+                              Remove
+                            </button>
+                          )
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Add Collaborator Flow (Owner Only) */}
+            {isOwner && (
+              <div className="collab-section">
+                <div className="collab-add-box">
+                  <label htmlFor="collab-email-input">Add collaborator by email</label>
+                  <div className="collab-input-row">
+                    <input
+                      id="collab-email-input"
+                      type="email"
+                      value={emailInput}
+                      disabled={busy}
+                      autoFocus
+                      placeholder="colleague@example.com"
+                      onChange={(e) => {
+                        setEmailInput(e.target.value)
+                        if (error) setError(null)
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void handleAddCollaboratorSubmit()
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="collab-add-btn"
+                      disabled={busy || !emailInput.trim()}
+                      onClick={() => void handleAddCollaboratorSubmit()}
+                    >
+                      {busy ? <Loader2 size={13} className="spin-icon" /> : <UserPlus size={13} />}
+                      <span>{busy ? 'Adding...' : 'Add'}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="dialog-actions">
+          <button type="button" className="dialog-secondary" disabled={busy} onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </section>
     </div>
   )
 }

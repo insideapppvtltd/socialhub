@@ -25,9 +25,9 @@ service cloud.firestore {
     // Strictly limited to 8 profile fields
     // -------------------------------------------------------------
     match /users/{userId} {
-      // Allow user to read only their own profile
+      // Allow user to read only their own full profile
       allow get: if request.auth != null && request.auth.uid == userId;
-      // Disallow querying/listing all users
+      // Disallow querying/listing full user documents
       allow list: if false;
 
       // Allow creation of own profile on registration/login
@@ -73,6 +73,31 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------
+    // User Directory Collection (Minimal Collaborator Discovery)
+    // Strictly limited to 4 discovery fields; full users/{userId} remains private
+    // -------------------------------------------------------------
+    match /user_directory/{userId} {
+      // Authenticated users can resolve directory profiles by UID and perform bounded email lookups
+      allow get: if request.auth != null;
+      allow list: if request.auth != null
+                  && request.query.limit != null
+                  && request.query.limit <= 5;
+
+      // Users can create/update only their own directory entry with the 4 allowed fields
+      allow create, update: if request.auth != null
+                            && request.auth.uid == userId
+                            && request.resource.data.user_id == request.auth.uid
+                            && request.resource.data.keys().hasOnly([
+                                 'user_id',
+                                 'user_email',
+                                 'user_name',
+                                 'user_dp_link'
+                               ]);
+
+      allow delete: if false;
+    }
+
+    // -------------------------------------------------------------
     // Workspaces Collection
     // Document ID matches the Social HUB workspace ID
     // -------------------------------------------------------------
@@ -87,7 +112,7 @@ service cloud.firestore {
       // List allowed for queries filtering where user is owner or authorized member
       allow list: if request.auth != null && (
         resource.data.ws_owner_id == request.auth.uid ||
-        (resource.data.ws_users_ids is list && request.auth.uid in resource.data.ws_users_ids)
+        request.auth.uid in resource.data.ws_users_ids
       );
 
       // Workspace creation:
@@ -101,17 +126,30 @@ service cloud.firestore {
                     && (!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list);
 
       // Workspace updates:
-      // Authorized owner or member can update accounts/passwords/timestamps,
-      // but client CANNOT alter ws_owner_id, ws_id, tamper with ws_users_ids,
-      // and ws_at_created cannot be modified once set
+      // - Workspace owner can update workspace data and manage collaborator membership (ws_users_ids),
+      //   but CANNOT alter ws_id, ws_owner_id, ws_at_created, or remove themselves from ws_users_ids.
+      // - Listed collaborators can only update ws_at_last_visit when opening/switching into the workspace,
+      //   and CANNOT modify ws_users_ids, ws_owner_id, accounts, passwords, or metadata.
       allow update: if request.auth != null
-                    && (resource.data.ws_owner_id == request.auth.uid ||
-                        (resource.data.ws_users_ids is list && request.auth.uid in resource.data.ws_users_ids))
                     && request.resource.data.ws_id == resource.data.ws_id
                     && request.resource.data.ws_owner_id == resource.data.ws_owner_id
-                    && (!('ws_users_ids' in resource.data) || request.resource.data.ws_users_ids == resource.data.ws_users_ids)
                     && (!('ws_at_created' in resource.data) || request.resource.data.ws_at_created == resource.data.ws_at_created)
-                    && (!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list);
+                    && (
+                      (
+                        resource.data.ws_owner_id == request.auth.uid
+                        && request.resource.data.ws_users_ids is list
+                        && resource.data.ws_owner_id in request.resource.data.ws_users_ids
+                        && (!('ws_passwords' in request.resource.data) || request.resource.data.ws_passwords is list)
+                      )
+                      ||
+                      (
+                        resource.data.ws_owner_id != request.auth.uid
+                        && resource.data.ws_users_ids is list
+                        && request.auth.uid in resource.data.ws_users_ids
+                        && request.resource.data.ws_users_ids == resource.data.ws_users_ids
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ws_at_last_visit'])
+                      )
+                    );
 
       // Workspace deletion:
       // Only the workspace owner can delete the workspace document

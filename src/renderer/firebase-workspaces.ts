@@ -5,9 +5,12 @@ import {
   getDocs,
   query,
   where,
+  limit,
   setDoc,
   updateDoc,
   deleteDoc,
+  arrayUnion,
+  arrayRemove,
   runTransaction,
   serverTimestamp,
   type Firestore
@@ -16,6 +19,7 @@ import type { User } from 'firebase/auth'
 import type { Account, Workspace } from '../main/types'
 import type { CloudEncryptedCredentialRecord, FirestorePasswordRecord } from '../main/cloud-crypto'
 import { getFirebaseFirestore, FIREBASE_PROJECT_ID } from './firebase'
+import { USERS_COLLECTION, USER_DIRECTORY_COLLECTION, type FirestoreUserDocument, type FirestoreUserDirectoryDocument } from './firebase-users'
 
 export const WORKSPACES_COLLECTION = 'workspaces'
 export type { FirestorePasswordRecord }
@@ -479,7 +483,12 @@ export async function syncUserWorkspaces(
   localWorkspaces: Workspace[],
   localAccounts: Account[],
   firestoreInstance?: Firestore
-): Promise<{ remoteWorkspaces: FirestoreWorkspaceDocument[]; synced: boolean }> {
+): Promise<{
+  remoteWorkspaces: FirestoreWorkspaceDocument[]
+  synced: boolean
+  memberQueryFailed?: boolean
+  memberQueryError?: { code: string; message: string }
+}> {
   if (!user || !user.uid) {
     return { remoteWorkspaces: [], synced: false }
   }
@@ -499,38 +508,60 @@ export async function syncUserWorkspaces(
       collection(db, WORKSPACES_COLLECTION),
       where('ws_users_ids', 'array-contains', user.uid)
     )
+    let memberQueryError: { code: string; message: string } | null = null
     const [snapOwner, snapMember] = await Promise.all([
       getDocs(qOwner),
-      getDocs(qMember).catch(() => ({ empty: true, docs: [], size: 0 }))
+      getDocs(qMember).catch((memberErr) => {
+        const errCode = (memberErr as { code?: string })?.code || 'UNKNOWN_ERROR'
+        const errMsg = memberErr instanceof Error ? memberErr.message : String(memberErr)
+        memberQueryError = { code: errCode, message: errMsg }
+        console.error(
+          `[FIRESTORE][WORKSPACES][QUERY_MEMBER][ERROR] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Code: ${errCode} | Message: ${errMsg}`
+        )
+        return null
+      })
     ])
 
     const docMap = new Map<string, any>()
     for (const docSnap of snapOwner.docs) {
       docMap.set(docSnap.id, docSnap)
     }
-    for (const docSnap of snapMember.docs) {
-      if (!docMap.has(docSnap.id)) {
-        docMap.set(docSnap.id, docSnap)
+    if (snapMember) {
+      for (const docSnap of snapMember.docs) {
+        if (!docMap.has(docSnap.id)) {
+          docMap.set(docSnap.id, docSnap)
+        }
       }
     }
     const allDocs = Array.from(docMap.values())
     const remoteWorkspaces: FirestoreWorkspaceDocument[] = []
+    const sharedCountLabel = snapMember ? String(snapMember.docs.length) : 'FAILED'
 
     if (allDocs.length === 0) {
       console.log(
-        `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered 0 remote workspaces. Initializing empty workspace collection for user.`
+        `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Owned: 0 | Shared: ${sharedCountLabel} | Discovered 0 remote workspaces. Initializing empty workspace collection for user.`
       )
-      return { remoteWorkspaces: [], synced: true }
+      return memberQueryError
+        ? { remoteWorkspaces: [], synced: true, memberQueryFailed: true, memberQueryError }
+        : { remoteWorkspaces: [], synced: true }
     }
 
     console.log(
-      `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Discovered ${allDocs.length} remote workspace(s).`
+      `[FIRESTORE][WORKSPACES][SYNC] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Owned: ${snapOwner.docs.length} | Shared: ${sharedCountLabel} | Discovered ${allDocs.length} remote workspace(s).`
     )
 
     for (const docSnap of allDocs) {
-      const data = docSnap.data() as FirestoreWorkspaceDocument
+      const rawData = docSnap.data() as FirestoreWorkspaceDocument
+      const data: FirestoreWorkspaceDocument = {
+        ...rawData,
+        ws_id: rawData.ws_id || docSnap.id
+      }
       remoteWorkspaces.push(data)
-      setLocalWorkspaceOwner(data.ws_id, user.uid)
+      setLocalWorkspaceOwner(data.ws_id, data.ws_owner_id || user.uid)
+
+      if (data.ws_owner_id !== user.uid) {
+        continue
+      }
 
       const docRef = doc(db, WORKSPACES_COLLECTION, data.ws_id)
       const updates: Record<string, any> = {}
@@ -579,7 +610,9 @@ export async function syncUserWorkspaces(
       }
     }
 
-    return { remoteWorkspaces, synced: true }
+    return memberQueryError
+      ? { remoteWorkspaces, synced: true, memberQueryFailed: true, memberQueryError }
+      : { remoteWorkspaces, synced: true }
   } catch (error) {
     const errObj = error as { code?: string; message?: string }
     const errCode = errObj?.code || 'UNKNOWN_ERROR'
@@ -761,11 +794,13 @@ export async function syncWorkspaceLastVisit(
     const updates: Record<string, any> = {
       ws_at_last_visit: serverTimestamp()
     }
-    if (!data.ws_at_created) {
-      updates.ws_at_created = serverTimestamp()
-    }
-    if (!data.ws_at_updated) {
-      updates.ws_at_updated = serverTimestamp()
+    if (data.ws_owner_id === user.uid) {
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_updated) {
+        updates.ws_at_updated = serverTimestamp()
+      }
     }
     await updateDoc(docRef, updates)
     lastVisitedWorkspaceId = workspaceId
@@ -806,11 +841,13 @@ export async function syncWorkspaceOnSwitch(
     const updates: Record<string, any> = {
       ws_at_last_visit: serverTimestamp()
     }
-    if (!data.ws_at_created) {
-      updates.ws_at_created = serverTimestamp()
-    }
-    if (!data.ws_at_updated) {
-      updates.ws_at_updated = serverTimestamp()
+    if (data.ws_owner_id === user.uid) {
+      if (!data.ws_at_created) {
+        updates.ws_at_created = serverTimestamp()
+      }
+      if (!data.ws_at_updated) {
+        updates.ws_at_updated = serverTimestamp()
+      }
     }
     await updateDoc(docRef, updates)
     lastVisitedWorkspaceId = workspaceId
@@ -826,5 +863,328 @@ export async function syncWorkspaceOnSwitch(
       error
     )
     return null
+  }
+}
+
+export interface WorkspaceCollaboratorProfile {
+  user_id: string
+  user_name: string
+  user_email: string
+  user_dp_link: string
+}
+
+export interface WorkspaceCollaborationDetails {
+  workspaceId: string
+  ownerId: string
+  owner: WorkspaceCollaboratorProfile | null
+  collaborators: WorkspaceCollaboratorProfile[]
+  rawUserIds: string[]
+}
+
+const EMAIL_VALIDATION_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/
+
+export function isValidCollaboratorEmail(email: string): boolean {
+  const trimmed = (email || '').trim()
+  return trimmed.length > 0 && EMAIL_VALIDATION_REGEX.test(trimmed)
+}
+
+function mapUserDocToProfile(uid: string, raw?: Partial<FirestoreUserDocument> | null): WorkspaceCollaboratorProfile {
+  return {
+    user_id: (raw?.user_id || uid).trim(),
+    user_name: (raw?.user_name || '').trim() || 'Social HUB User',
+    user_email: (raw?.user_email || '').trim(),
+    user_dp_link: (raw?.user_dp_link || '').trim()
+  }
+}
+
+/**
+ * Resolves minimal user directory profiles from `user_directory/{uid}` for a list of UIDs.
+ * Full `users/{uid}` documents remain private; only falls back to `users/{currentUserUid}` for self.
+ */
+export async function resolveUserProfilesByIds(
+  uids: string[],
+  firestoreInstance?: Firestore,
+  currentUserUid?: string
+): Promise<Map<string, WorkspaceCollaboratorProfile>> {
+  const uniqueIds = Array.from(new Set((uids || []).map((id) => (id || '').trim()).filter(Boolean)))
+  const result = new Map<string, WorkspaceCollaboratorProfile>()
+  if (uniqueIds.length === 0) return result
+
+  const db = firestoreInstance || getFirebaseFirestore()
+  await Promise.all(
+    uniqueIds.map(async (uid) => {
+      try {
+        const dirSnap = await getDoc(doc(db, USER_DIRECTORY_COLLECTION, uid))
+        if (dirSnap.exists()) {
+          const data = dirSnap.data() as Partial<FirestoreUserDirectoryDocument>
+          result.set(uid, mapUserDocToProfile(uid, data))
+          return
+        }
+        // Only read own private `users/{uid}` document as a fallback
+        if (currentUserUid && uid === currentUserUid) {
+          const selfSnap = await getDoc(doc(db, USERS_COLLECTION, uid))
+          if (selfSnap.exists()) {
+            const data = selfSnap.data() as Partial<FirestoreUserDocument>
+            result.set(uid, mapUserDocToProfile(uid, data))
+            return
+          }
+        }
+        result.set(uid, {
+          user_id: uid,
+          user_name: 'Unknown User',
+          user_email: `UID: ${uid.slice(0, 8)}...`,
+          user_dp_link: ''
+        })
+      } catch (err) {
+        console.warn(`[FIRESTORE][COLLAB] Could not resolve directory profile ${uid}:`, err)
+        result.set(uid, {
+          user_id: uid,
+          user_name: 'Unknown User',
+          user_email: `UID: ${uid.slice(0, 8)}...`,
+          user_dp_link: ''
+        })
+      }
+    })
+  )
+
+  return result
+}
+
+export function formatFirestoreCollabError(
+  error: unknown,
+  operation: string,
+  workspaceId = 'N/A',
+  fallbackMessage = 'Something went wrong while updating workspace collaborators.',
+  authUid = 'N/A'
+): string {
+  const errObj = error as { code?: string; message?: string }
+  const errCode = typeof errObj?.code === 'string' ? errObj.code : 'unknown'
+  const rawMsg = errObj?.message || (error instanceof Error ? error.message : String(error))
+  console.error(
+    `[FIRESTORE][COLLAB][ERROR] Operation: ${operation} | UID: ${authUid} | Workspace: ${workspaceId} | Code: ${errCode} | Message: ${rawMsg}`
+  )
+  if (errCode === 'permission-denied' || /missing or insufficient permissions/i.test(rawMsg)) {
+    return 'You do not have permission to manage collaborators in this workspace.'
+  }
+  if (
+    errCode === 'unavailable' ||
+    errCode === 'deadline-exceeded' ||
+    errCode === 'network-request-failed' ||
+    /network|offline|unavailable|failed to fetch/i.test(rawMsg)
+  ) {
+    return 'Unable to connect to Firebase. Please try again.'
+  }
+  if (errCode === 'not-found') {
+    return 'Workspace document not found.'
+  }
+  return fallbackMessage
+}
+
+/**
+ * Fetches workspace collaboration metadata (owner + collaborators resolved from `users`).
+ */
+export async function fetchWorkspaceCollaborationDetails(
+  user: User | null,
+  workspaceId: string,
+  firestoreInstance?: Firestore
+): Promise<WorkspaceCollaborationDetails> {
+  if (!user || !user.uid || !workspaceId) {
+    throw new Error('Authentication and workspace ID are required.')
+  }
+
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) {
+      throw new Error('Workspace not found in cloud.')
+    }
+
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (!isAuthorizedUser(user.uid, data)) {
+      throw new Error('You do not have permission to view this workspace.')
+    }
+
+    const ownerId = (data.ws_owner_id || '').trim()
+    const rawUserIds = Array.from(
+      new Set(
+        (Array.isArray(data.ws_users_ids) ? data.ws_users_ids : [ownerId])
+          .map((id) => (id || '').trim())
+          .filter(Boolean)
+      )
+    )
+
+    const profiles = await resolveUserProfilesByIds([ownerId, ...rawUserIds], db, user.uid)
+    const owner = ownerId ? profiles.get(ownerId) ?? null : null
+    const collaborators: WorkspaceCollaboratorProfile[] = []
+    const seenCollab = new Set<string>()
+    for (const uid of rawUserIds) {
+      if (!uid || uid === ownerId || seenCollab.has(uid)) continue
+      seenCollab.add(uid)
+      const prof = profiles.get(uid)
+      if (prof) collaborators.push(prof)
+    }
+
+    return {
+      workspaceId,
+      ownerId,
+      owner,
+      collaborators,
+      rawUserIds
+    }
+  } catch (error) {
+    if (error instanceof Error && (error.message.includes('not found in cloud') || error.message.includes('permission to view'))) {
+      throw error
+    }
+    throw new Error(
+      formatFirestoreCollabError(error, 'fetchWorkspaceCollaborationDetails', workspaceId, 'Unable to load workspace collaborators.')
+    )
+  }
+}
+
+/**
+ * Searches the minimal `user_directory` collection by `user_email` using trimmed, lowercase matching.
+ * Uses bounded equality queries (`limit(5)`) without exposing full `users` documents.
+ */
+export async function findRegisteredUserByEmail(
+  email: string,
+  firestoreInstance?: Firestore
+): Promise<WorkspaceCollaboratorProfile | null> {
+  const trimmed = (email || '').trim()
+  if (!isValidCollaboratorEmail(trimmed)) {
+    throw new Error('Please enter a valid email address.')
+  }
+  const normalizedLower = trimmed.toLowerCase()
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const directoryRef = collection(db, USER_DIRECTORY_COLLECTION)
+
+    // Bounded lowercase equality query on minimal user_directory
+    const qLower = query(directoryRef, where('user_email', '==', normalizedLower), limit(5))
+    const snapLower = await getDocs(qLower)
+    if (!snapLower.empty) {
+      const first = snapLower.docs[0]
+      return mapUserDocToProfile(first.id, first.data() as Partial<FirestoreUserDirectoryDocument>)
+    }
+
+    return null
+  } catch (error) {
+    throw new Error(
+      formatFirestoreCollabError(error, 'findRegisteredUserByEmail', 'N/A', 'Something went wrong while looking up the user.')
+    )
+  }
+}
+
+/**
+ * Adds a registered collaborator UID to `ws_users_ids` atomically via `arrayUnion`.
+ * Enforces owner-only authorization and prevents duplicate/owner additions.
+ */
+export async function addWorkspaceCollaborator(
+  user: User | null,
+  workspaceId: string,
+  collaboratorUid: string,
+  firestoreInstance?: Firestore
+): Promise<{
+  added: boolean
+  status: 'added' | 'already_collaborator' | 'is_owner' | 'unauthorized' | 'not_found' | 'error'
+  message: string
+}> {
+  if (!user || !user.uid || !workspaceId || !collaboratorUid) {
+    return { added: false, status: 'unauthorized', message: 'Authentication and valid user ID are required.' }
+  }
+
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) {
+      return { added: false, status: 'not_found', message: 'Workspace document not found.' }
+    }
+
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (data.ws_owner_id !== user.uid) {
+      return { added: false, status: 'unauthorized', message: 'Only the workspace owner can add collaborators.' }
+    }
+
+    if (collaboratorUid === data.ws_owner_id) {
+      return { added: false, status: 'is_owner', message: 'This user is the owner of this workspace.' }
+    }
+
+    const currentIds = Array.isArray(data.ws_users_ids) ? data.ws_users_ids : []
+    if (currentIds.includes(collaboratorUid)) {
+      return {
+        added: false,
+        status: 'already_collaborator',
+        message: 'This user is already a collaborator in this workspace.'
+      }
+    }
+
+    const idsToAdd = currentIds.includes(data.ws_owner_id)
+      ? [collaboratorUid]
+      : [data.ws_owner_id, collaboratorUid]
+
+    await updateDoc(docRef, {
+      ws_users_ids: arrayUnion(...idsToAdd),
+      ws_at_updated: serverTimestamp()
+    })
+
+    console.log(
+      `[FIRESTORE][WORKSPACES][COLLAB][ADD] Project: ${FIREBASE_PROJECT_ID} | UID: ${user.uid} | Workspace: ${workspaceId} | Added UID: ${collaboratorUid}`
+    )
+    return { added: true, status: 'added', message: 'Collaborator added successfully.' }
+  } catch (error) {
+    return {
+      added: false,
+      status: 'error',
+      message: formatFirestoreCollabError(error, 'addWorkspaceCollaborator', workspaceId, 'Something went wrong while updating workspace collaborators.', user.uid)
+    }
+  }
+}
+
+/**
+ * Removes a collaborator UID from `ws_users_ids` atomically via `arrayRemove`.
+ * Enforces owner-only authorization and prevents removing the owner.
+ */
+export async function removeWorkspaceCollaborator(
+  user: User | null,
+  workspaceId: string,
+  collaboratorUid: string,
+  firestoreInstance?: Firestore
+): Promise<{ removed: boolean; message: string }> {
+  if (!user || !user.uid || !workspaceId || !collaboratorUid) {
+    return { removed: false, message: 'Authentication and valid user ID are required.' }
+  }
+
+  try {
+    const db = firestoreInstance || getFirebaseFirestore()
+    const docRef = doc(db, WORKSPACES_COLLECTION, workspaceId)
+    const snap = await getDoc(docRef)
+    if (!snap.exists()) {
+      return { removed: false, message: 'Workspace document not found.' }
+    }
+
+    const data = snap.data() as FirestoreWorkspaceDocument
+    if (data.ws_owner_id !== user.uid) {
+      return { removed: false, message: 'Only the workspace owner can remove collaborators.' }
+    }
+
+    if (collaboratorUid === data.ws_owner_id) {
+      return { removed: false, message: 'The workspace owner cannot be removed.' }
+    }
+
+    await updateDoc(docRef, {
+      ws_users_ids: arrayRemove(collaboratorUid),
+      ws_at_updated: serverTimestamp()
+    })
+
+    console.log(
+      `[FIRESTORE][WORKSPACES][COLLAB][REMOVE] Project: ${FIREBASE_PROJECT_ID} | Workspace: ${workspaceId} | Removed UID: ${collaboratorUid}`
+    )
+    return { removed: true, message: 'Collaborator removed successfully.' }
+  } catch (error) {
+    return {
+      removed: false,
+      message: formatFirestoreCollabError(error, 'removeWorkspaceCollaborator', workspaceId, 'Something went wrong while removing the collaborator.')
+    }
   }
 }

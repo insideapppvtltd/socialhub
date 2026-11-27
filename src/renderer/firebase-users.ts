@@ -4,7 +4,15 @@ import type { UserPasswordCryptoMetadata } from '../main/cloud-crypto'
 import { getFirebaseFirestore, FIREBASE_PROJECT_ID } from './firebase'
 
 export const USERS_COLLECTION = 'users'
+export const USER_DIRECTORY_COLLECTION = 'user_directory'
 export const PASSWORD_CRYPTO_COLLECTION = 'password_crypto'
+
+export interface FirestoreUserDirectoryDocument {
+  user_id: string
+  user_email: string
+  user_name: string
+  user_dp_link?: string
+}
 
 export interface FirestoreUserDocument {
   user_id: string
@@ -51,6 +59,27 @@ export function resetUserSyncCache(): void {
   lastSyncTimestamp = 0
   inFlightSyncUid = null
   inFlightSync = null
+}
+
+async function syncUserDirectoryEntry(
+  db: Firestore,
+  uid: string,
+  email: string,
+  name: string,
+  dpLink: string
+): Promise<void> {
+  try {
+    const dirRef = doc(db, USER_DIRECTORY_COLLECTION, uid)
+    const entry: FirestoreUserDirectoryDocument = {
+      user_id: uid,
+      user_email: (email || '').trim().toLowerCase(),
+      user_name: (name || '').trim() || 'User',
+      user_dp_link: (dpLink || '').trim()
+    }
+    await setDoc(dirRef, entry, { merge: true })
+  } catch (err) {
+    console.warn(`[FIRESTORE][USER_DIRECTORY][WARN] UID: ${uid}:`, err instanceof Error ? err.message : String(err))
+  }
 }
 
 /**
@@ -122,6 +151,7 @@ export async function syncUserDocument(
           user_status: 1
         }
         await setDoc(userRef, newDoc)
+        await syncUserDirectoryEntry(db, user.uid, profile.email, profile.name, profile.dpLink)
         lastSyncedUid = user.uid
         lastSyncTimestamp = Date.now()
         console.log(
@@ -144,6 +174,13 @@ export async function syncUserDocument(
 
         // Important: user_id, user_at_created, and user_status are never modified on update
         await updateDoc(userRef, updates)
+        await syncUserDirectoryEntry(
+          db,
+          user.uid,
+          profile.email,
+          updates.user_name,
+          profile.dpLink
+        )
         lastSyncedUid = user.uid
         lastSyncTimestamp = Date.now()
         console.log(

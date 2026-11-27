@@ -25,6 +25,7 @@ export interface Workspace {
   name: string
   createdAt: string
   ownerId?: string
+  memberIds?: string[]
   syncedToCloud?: boolean
 }
 
