@@ -3,6 +3,7 @@ import { AlertCircle, Loader2, Monitor, Moon, Sun, UserCheck } from 'lucide-reac
 import hubLogo from '../assets/icon_wh_small.png'
 import type { ThemeMode } from '../main/types'
 import { getFirebaseConfigError, loginAnonymously, loginWithGoogle } from './firebase'
+import { isAndroidRuntime } from './platform/hub-bridge'
 
 interface WelcomeScreenProps {
   currentTheme: ThemeMode
@@ -240,7 +241,11 @@ export function WelcomeScreen({ currentTheme, onThemeChange }: WelcomeScreenProp
         </div>
 
         <div className="welcome-footer-info">
-          <span>Sessions, accounts, and notifications remain safely stored on this computer.</span>
+          <span>
+            {isAndroidRuntime()
+              ? 'Android Phase 1: Use Anonymous Sign-In for testing. Google Sign-In on Android is pending native adaptation (Phase 2).'
+              : 'Sessions, accounts, and notifications remain safely stored on this computer.'}
+          </span>
         </div>
       </div>
     </div>

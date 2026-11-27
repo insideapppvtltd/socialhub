@@ -10,9 +10,14 @@
     "preview": "electron-vite preview",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
-    "dist:mac": "npm run build && electron-builder --mac dmg --universal"
+    "dist:mac": "npm run build && electron-builder --mac dmg --universal",
+    "build:android:web": "vite build --config vite.android.config.ts",
+    "android:sync": "npm run build:android:web && npx cap sync android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleDebug"
   },
   "dependencies": {
+    "@capacitor/core": "^8.6.3",
+    "@capacitor/preferences": "^8.0.1",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.9",
     "firebase": "11.10.0",
@@ -21,6 +26,8 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/cli": "^8.6.3",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",

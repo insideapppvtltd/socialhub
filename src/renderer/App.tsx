@@ -19,6 +19,7 @@ import {
   Loader2,
   LogOut,
   MapPin,
+  Menu,
   MessageSquare,
   Mic,
   Monitor,
@@ -72,6 +73,7 @@ import {
 import { doc, getDoc } from 'firebase/firestore'
 import { WelcomeScreen } from './WelcomeScreen'
 import { PasswordManager } from './PasswordManager'
+import { isAndroidRuntime } from './platform/hub-bridge'
 
 type AccountMenu = { id: string; x: number; y: number } | null
 type EditorDialog =
@@ -130,7 +132,9 @@ export default function App() {
   const [dialog, setDialog] = useState<EditorDialog>(null)
   const [trayMenuOpen, setTrayMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [sortMenuOpen, setSortMenuOpen] = useState(false)
+  const isAndroid = isAndroidRuntime()
   const [navStatesByAccount, setNavStatesByAccount] = useState<Record<string, AccountNavigationState>>({})
   const [copiedLinkAccountId, setCopiedLinkAccountId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
@@ -448,6 +452,7 @@ export default function App() {
     async (workspaceId: string) => {
       try {
         setWorkspaceMenuOpen(false)
+        setMobileSidebarOpen(false)
         setPasswordsOpen(false)
         setNotificationsOpen(false)
         await window.socialHub.activateWorkspace(workspaceId)
@@ -622,6 +627,7 @@ export default function App() {
   )
 
   const handleSelectAccount = useCallback((accountId: string) => {
+    setMobileSidebarOpen(false)
     setPasswordsOpen(false)
     setNotificationsOpen(false)
     void window.socialHub.activateAccount(accountId).catch((error: unknown) => {
@@ -767,7 +773,30 @@ export default function App() {
 
   return (
     <main className="hub-shell">
-      <aside className="sidebar">
+      <header className="mobile-top-bar">
+        <button
+          type="button"
+          className="mobile-menu-btn"
+          aria-label="Open navigation drawer"
+          onClick={() => setMobileSidebarOpen(true)}
+        >
+          <Menu size={18} />
+        </button>
+        <div className="mobile-top-title">
+          <strong>{activeAccount ? activeAccount.name : activeWorkspace ? activeWorkspace.name : 'Social Hub'}</strong>
+          {activeWorkspace && <span>{activeWorkspace.name}</span>}
+        </div>
+      </header>
+
+      {mobileSidebarOpen && (
+        <div
+          className="mobile-drawer-backdrop"
+          onClick={() => setMobileSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside className={`sidebar ${mobileSidebarOpen ? 'mobile-open' : ''}`}>
         <header className="brand">
           <img className="brand-logo" src={hubLogo} alt="" />
           <div className="brand-copy">
@@ -1380,6 +1409,29 @@ export default function App() {
             )}
           </div>
         </div>
+      )}
+
+      {isAndroid && hasWorkspaces && !notificationsOpen && !passwordsOpen && (
+        <section className="android-account-placeholder" aria-label="Android Account Browser Placeholder">
+          <div className="android-placeholder-card">
+            <div className="android-placeholder-badge">Android Phase 1 Foundation</div>
+            <h2>{activeAccount ? activeAccount.name : activeWorkspace?.name || 'Workspace Ready'}</h2>
+            {activeAccount ? (
+              <>
+                <p className="android-placeholder-meta">
+                  {resolvePlatformName(activeAccount.appId, activeAccount.url)} • {activeAccount.url}
+                </p>
+                <p className="android-placeholder-note">
+                  Embedded account browser sessions (Electron WebContentsView / persist:account-*) require a dedicated native Android WebView implementation (planned for Phase 2).
+                </p>
+              </>
+            ) : (
+              <p className="android-placeholder-note">
+                Select or add an account from the navigation drawer. Workspaces and Firestore collaboration are active; native Android account WebView sessions will be added in Phase 2.
+              </p>
+            )}
+          </div>
+        </section>
       )}
 
       {!hasWorkspaces && !notificationsOpen && !passwordsOpen && (
