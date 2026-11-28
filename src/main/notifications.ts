@@ -10,13 +10,30 @@ interface ActiveCall {
 
 export class HubNotifications {
   private readonly activeCalls = new Map<string, ActiveCall>()
+  private monitoringEnabled = true
 
   constructor(
     private readonly getWindow: () => BrowserWindow | null,
     private readonly onActivateAccount: (accountId: string) => void
   ) {}
 
+  setMonitoringEnabled(enabled: boolean): void {
+    this.monitoringEnabled = enabled
+    if (!enabled) {
+      this.dismissAllCalls()
+      this.broadcastActiveCalls()
+    }
+  }
+
+  isMonitoringEnabled(): boolean {
+    return this.monitoringEnabled
+  }
+
   showIncomingCall(account: { id: string; name: string }, call: IncomingCallEvent): void {
+    if (!this.monitoringEnabled) {
+      console.log(`[CALL][SUPPRESSED] Monitoring disabled (logged out); ignoring call for account ${account.id}`)
+      return
+    }
     const existing = this.activeCalls.get(account.id)
     if (existing) {
       if (existing.callId === call.callId) {
@@ -147,6 +164,7 @@ export class HubNotifications {
   }
 
   notifyDownload(update: DownloadUpdate): void {
+    if (!this.monitoringEnabled) return
     const label = update.state === 'completed' ? 'Download complete' : 'Download failed'
     const notification = new Notification({
       title: label,

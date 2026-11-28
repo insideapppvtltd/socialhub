@@ -285,6 +285,10 @@ export function registerIpc(
     guard(event)
     return getState()
   })
+  ipcMain.handle('hub:logout-connected-apps', async (event) => {
+    guard(event)
+    return views.logoutConnectedApps()
+  })
   ipcMain.handle('hub:set-current-user', (event, uid: unknown) => {
     guard(event)
     const userUid = typeof uid === 'string' && uid.trim() ? uid.trim() : null
@@ -602,6 +606,7 @@ export function registerIpc(
     views.setSidebarOverlayActive(active)
   })
   ipcMain.on('social:notification-click', (event) => {
+    if (!accounts.getCurrentUser()) return
     const accountId = views.accountForWebContents(event.sender)
     if (!accountId || !views.isAccountOrigin(accountId, event.senderFrame?.url ?? '')) {
       console.warn('Rejected notification-click IPC from an untrusted frame.')
@@ -610,6 +615,7 @@ export function registerIpc(
     notifications.focusAccount(accountId)
   })
   ipcMain.on('social:chat-notification', (event, payload: unknown) => {
+    if (!accounts.getCurrentUser()) return
     const senderFrame = event.senderFrame
     if (!senderFrame || senderFrame !== event.sender.mainFrame) {
       console.warn('Rejected chat-notification IPC: sender frame is not the main frame.')
@@ -667,6 +673,7 @@ export function registerIpc(
     broadcastNotifications()
   })
   ipcMain.on('hub:incoming-call-start', (event, payload: unknown) => {
+    if (!accounts.getCurrentUser()) return
     const senderFrame = event.senderFrame
     if (!senderFrame || senderFrame !== event.sender.mainFrame) {
       console.warn('[CALL][IPC] Rejected incoming-call-start: sender frame is not the main frame')
@@ -758,6 +765,7 @@ export function registerIpc(
     })
   })
   ipcMain.on('hub:incoming-call-end', (event, payload: unknown) => {
+    if (!accounts.getCurrentUser()) return
     const senderFrame = event.senderFrame
     if (!senderFrame || senderFrame !== event.sender.mainFrame) {
       console.warn('[CALL][IPC] Rejected incoming-call-end: sender frame is not the main frame')
@@ -784,6 +792,7 @@ export function registerIpc(
     notifications.dismissIncomingCall(accountId, callId)
   })
   ipcMain.on('hub:incoming-call-update', (event, payload: unknown) => {
+    if (!accounts.getCurrentUser()) return
     const senderFrame = event.senderFrame
     if (!senderFrame || senderFrame !== event.sender.mainFrame) {
       console.warn('[CALL][IPC] Rejected incoming-call-update: sender frame is not the main frame')

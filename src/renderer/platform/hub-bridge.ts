@@ -167,6 +167,13 @@ export function createAndroidHubBridge(): SocialHubAPI {
       return state
     },
 
+    async logoutConnectedApps() {
+      return {
+        clearedCount: 0,
+        errors: ['Connected app website session logout requires native Android WebView support (pending Phase 2).']
+      }
+    },
+
     async claimWorkspaces(uid, workspaceIds) {
       await loadState()
       for (const wsId of workspaceIds) {

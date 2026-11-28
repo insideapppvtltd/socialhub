@@ -468,6 +468,30 @@ button { color: inherit; font: inherit; cursor: pointer; }
 .hub-dialog label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 10px; }
 .hub-dialog input, .hub-dialog select { width: 100%; height: 36px; margin-bottom: 13px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; background: var(--sidebar); color: var(--text); font: inherit; font-size: 12px; }
 .hub-dialog input:focus, .hub-dialog select:focus { border-color: #56ae7c; box-shadow: 0 0 0 2px #56ae7c24; }
+.hub-dialog .logout-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sidebar);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+.hub-dialog .logout-checkbox-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--green);
+  flex-shrink: 0;
+  cursor: pointer;
+}
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 19px; }
 .dialog-actions button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 7px; font-size: 10px; font-weight: 600; }
 .dialog-secondary { background: var(--surface); color: var(--text); }

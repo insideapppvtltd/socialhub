@@ -7,6 +7,7 @@ export type { CredentialSummary, UserPasswordCryptoMetadata, CloudEncryptedCrede
 
 export interface SocialHubAPI {
   setCurrentUser(uid: string | null): Promise<HubState>
+  logoutConnectedApps(): Promise<{ clearedCount: number; errors: string[] }>
   claimWorkspaces(uid: string, workspaceIds: string[]): Promise<boolean>
   getState(): Promise<HubState>
   getGoogleAuthToken(): Promise<string>
@@ -69,6 +70,7 @@ export interface SocialHubAPI {
 
 const api: SocialHubAPI = {
   setCurrentUser: (uid) => ipcRenderer.invoke('hub:set-current-user', uid),
+  logoutConnectedApps: () => ipcRenderer.invoke('hub:logout-connected-apps'),
   claimWorkspaces: (uid, workspaceIds) => ipcRenderer.invoke('hub:claim-workspaces', uid, workspaceIds),
   reconcileRemoteWorkspaces: (remoteWorkspaces) => ipcRenderer.invoke('hub:reconcile-remote-workspaces', remoteWorkspaces),
   reconcileRemoteAccounts: (workspaceId, remoteAccounts) => ipcRenderer.invoke('hub:reconcile-remote-accounts', { workspaceId, remoteAccounts }),

@@ -203,6 +203,57 @@ export class ViewManager {
     this.onStateChanged()
   }
 
+  private destroyAllAccountViews(): void {
+    for (const view of this.views.values()) {
+      try {
+        view.setVisible(false)
+        this.window.contentView.removeChildView(view)
+        if (!view.webContents.isDestroyed()) {
+          view.webContents.close()
+        }
+      } catch {
+        // ignore view cleanup errors during shutdown/logout
+      }
+    }
+    this.views.clear()
+    this.unread.clear()
+    this.unsupported.clear()
+    this.navStates.clear()
+  }
+
+  async logoutConnectedApps(): Promise<{ clearedCount: number; errors: string[] }> {
+    const accounts = this.accounts.list()
+    let clearedCount = 0
+    const errors: string[] = []
+
+    for (const account of accounts) {
+      try {
+        this.destroyTemporaryView(account.id)
+        const existingView = this.views.get(account.id)
+        if (existingView) {
+          existingView.setVisible(false)
+          this.window.contentView.removeChildView(existingView)
+          if (!existingView.webContents.isDestroyed()) {
+            existingView.webContents.close()
+          }
+          this.views.delete(account.id)
+        }
+        const partition = `persist:account-${account.id}`
+        const accountSession = this.sessions.get(account.id) ?? session.fromPartition(partition)
+        await accountSession.clearStorageData({
+          storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage']
+        })
+        await accountSession.clearAuthCache()
+        clearedCount += 1
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error)
+        errors.push(`${account.name}: ${msg}`)
+      }
+    }
+
+    return { clearedCount, errors }
+  }
+
   switchUser(uid: string | null): void {
     for (const view of this.views.values()) {
       view.setVisible(false)
@@ -214,10 +265,14 @@ export class ViewManager {
     this.accounts.setActive('')
 
     if (!uid) {
+      this.notifications.setMonitoringEnabled(false)
       this.destroyAllTemporaryViews()
+      this.destroyAllAccountViews()
       this.onStateChanged()
       return
     }
+
+    this.notifications.setMonitoringEnabled(true)
 
     const accounts = this.accounts.list()
     for (const account of accounts) {

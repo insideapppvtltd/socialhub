@@ -177,13 +177,27 @@ export default function App() {
     setDialog({ kind: 'add' })
   }, [state.workspaces, state.activeWorkspaceId, firebaseUser, showToast])
 
-  const handleLogout = useCallback(async () => {
+  const handleLogout = useCallback(async (logoutConnectedApps = false) => {
     try {
       resetUserSyncCache()
       await window.socialHub.lockCloudPassword().catch(() => {})
-      await logoutUser()
+      if (logoutConnectedApps) {
+        const result = await window.socialHub.logoutConnectedApps?.().catch((err) => {
+          console.warn('[LOGOUT][APPS] Failed to clear some connected app sessions:', err)
+          return { clearedCount: 0, errors: [err instanceof Error ? err.message : String(err)] }
+        })
+        if (result && result.errors.length > 0) {
+          console.warn('[LOGOUT][APPS] Partial connected-app logout errors:', result.errors)
+        }
+      }
       await window.socialHub.setCurrentUser(null)
-      showToast('Logged out successfully.')
+      setActiveCallCount(0)
+      await logoutUser()
+      showToast(
+        logoutConnectedApps
+          ? 'Logged out of Social HUB and connected apps.'
+          : 'Logged out successfully.'
+      )
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Logout failed.')
     }
@@ -1546,10 +1560,11 @@ export default function App() {
               setDialog(null)
             } else if (dialog.kind === 'delete-workspace') {
               void submitDeleteWorkspace(dialog.workspace.id)
-            } else if (dialog.kind === 'confirm-logout') {
-              setDialog(null)
-              void handleLogout()
             }
+          }}
+          onConfirmLogout={(logoutConnectedApps) => {
+            setDialog(null)
+            void handleLogout(logoutConnectedApps)
           }}
         />
       )}
@@ -1576,7 +1591,8 @@ function HubDialog({
   onSubmitPermissions,
   onSubmitGlobalPermissions,
   onResetGlobalPermissions,
-  onConfirm
+  onConfirm,
+  onConfirmLogout
 }: {
   dialog: Exclude<EditorDialog, null>
   workspaces: Workspace[]
@@ -1595,8 +1611,16 @@ function HubDialog({
   onSubmitGlobalPermissions: (permissions: AccountPermissions) => Promise<void>
   onResetGlobalPermissions: () => Promise<AccountPermissions>
   onConfirm: () => void
+  onConfirmLogout: (logoutConnectedApps: boolean) => void
 }) {
   const [appMode, setAppMode] = useState<'app' | 'custom'>('app')
+  const [logoutConnectedApps, setLogoutConnectedApps] = useState(false)
+
+  useEffect(() => {
+    if (dialog.kind === 'confirm-logout') {
+      setLogoutConnectedApps(false)
+    }
+  }, [dialog.kind])
 
   if (dialog.kind === 'collaborators') {
     return (
@@ -1843,17 +1867,25 @@ function HubDialog({
           if (event.target === event.currentTarget) onClose()
         }}
       >
-        <section className="hub-dialog" role="alertdialog" aria-modal="true">
-          <h2>Log out of Social HUB?</h2>
+        <section className="hub-dialog" role="alertdialog" aria-modal="true" aria-labelledby="logout-dialog-title">
+          <h2 id="logout-dialog-title">Log out of Social HUB?</h2>
           <p>
-            Are you sure you want to log out? Your workspaces, accounts, notifications, and login sessions will remain safely preserved on this device.
+            You will stop receiving notifications and incoming-call alerts from your connected apps.
           </p>
+          <label className="logout-checkbox-row">
+            <input
+              type="checkbox"
+              checked={logoutConnectedApps}
+              onChange={(event) => setLogoutConnectedApps(event.target.checked)}
+            />
+            <span>Also log out of all connected apps</span>
+          </label>
           <div className="dialog-actions">
             <button type="button" className="dialog-secondary" onClick={onClose}>
               Cancel
             </button>
-            <button type="button" className="dialog-danger" onClick={onConfirm}>
-              Log out
+            <button type="button" className="dialog-danger" onClick={() => onConfirmLogout(logoutConnectedApps)}>
+              Log Out
             </button>
           </div>
         </section>
